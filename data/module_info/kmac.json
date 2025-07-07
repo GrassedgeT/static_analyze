@@ -1,0 +1,127 @@
+{
+  "ip_module_name": "kmac",
+  "documentation_analysis": {
+    "executive_summary": "KMAC is a Keccak-based cryptographic module implementing SHA-3, cSHAKE, and KMAC algorithms for cryptographic hashing and message authentication. It provides hardware-accelerated cryptographic operations with security features including hardware masking, entropy seeding, and sideload key interface.",
+    "theory_of_operation": {
+      "core_functionality": "KMAC processes input messages through Keccak permutations in configurable modes (SHA3/cSHAKE/KMAC). It supports multiple security strengths and endianness configurations. The core implements a secure keyed hashing mechanism with entropy-based masking for side-channel resistance.",
+      "state_machines": [
+        {
+          "fsm_name": "Keccak Round Control",
+          "description": "Controls the 24-round Keccak permutation process. State transitions are triggered by message absorption completion or external commands. Vulnerable to glitching attacks during state transitions.",
+          "states": ["IDLE", "ABSORB", "PERMUTE", "SQUEEZE", "DONE"]
+        },
+        {
+          "fsm_name": "Entropy Manager",
+          "description": "Manages entropy seeding and refresh operations. Transitions between WAIT, SEED, and READY states based on entropy thresholds and timer events. Critical for cryptographic security.",
+          "states": ["ST_RAND_RESET", "ST_SEED", "ST_READY", "ST_ERROR"]
+        }
+      ],
+      "data_flow": "Data enters via TL-UL bus → Message FIFO → KMAC core → Keccak permutation engine. Key material is processed separately through key share registers. Entropy seeds mix with internal state during processing. Output state can be read via state registers."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary control and data interface. Carries commands, configuration, and message data. Connected to register file and message FIFO.",
+          "potential_vulnerabilities": "Unauthorized register access, protocol violations, buffer overflow via message FIFO, timing side-channels"
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "lc_escalate_en",
+          "direction": "Input",
+          "description": "Lifecycle escalation signal. When asserted, triggers security countermeasures and error states."
+        },
+        {
+          "pin_name": "keymgr_key",
+          "direction": "Input",
+          "description": "Sideloaded key from key manager. Bypasses software-accessible key registers for higher security."
+        }
+      ],
+      "clocks_and_resets": "Primary clock: clk_i, Entropy clock: clk_edn_i. Asynchronous reset: rst_ni. Potential clock domain crossing (CDC) issues between clk_i and clk_edn_i domains during entropy operations."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CFG_SHADOWED",
+          "offset": "0x14",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Main configuration register. Controls KMAC enable, mode, strength, entropy settings, and endianness.",
+          "security_implication": "Improper configuration may weaken cryptographic strength or disable security features. Shadowed to prevent glitching attacks."
+        },
+        {
+          "register_name": "KEY_SHARE0_*",
+          "offset": "0x30-0x6C",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Key share registers (16 per share). Store cryptographic key material in masked representation.",
+          "security_implication": "Critical key material exposure if access control fails. Requires CFG_REGWEN lock. Writes are gated by configuration lock."
+        },
+        {
+          "register_name": "CMD",
+          "offset": "0x18",
+          "width": 32,
+          "access_type": "WO",
+          "description": "Command register. Triggers operations like start processing, entropy requests, and error acknowledgment.",
+          "security_implication": "Malicious commands may bypass security checks or trigger erroneous operations. Includes hash counter clear and error processing controls."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "kmac_done",
+          "description": "Asserted when hashing operation completes. Improper handling may cause state desynchronization."
+        },
+        {
+          "interrupt_name": "kmac_err",
+          "description": "Indicates cryptographic errors or security violations. Requires proper error recovery to avoid locking."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Register Access Control",
+        "description": "CFG_REGWEN register gates critical configuration changes. Shadow registers provide glitch protection.",
+        "potential_weaknesses": "Software may bypass locking mechanism if access control logic flawed (CWE-1262)"
+      },
+      {
+        "feature_name": "Entropy-Based Masking",
+        "description": "Uses hardware TRNG for cryptographic masking. Implements refresh thresholds and seed controls.",
+        "potential_weaknesses": "Predictable entropy may weaken masking (CWE-1241). Threshold configuration vulnerable to poor choices."
+      },
+      {
+        "feature_name": "Key Sideloading",
+        "description": "Direct key input from key manager avoids software-visible registers.",
+        "potential_weaknesses": "Interface may leak key material through side-channels if not properly isolated."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "Module implements extensive register protection logic: 1) Key registers (KEY_SHARE*) have gated writes controlled by CFG_REGWEN 2) Entropy registers (ENTROPY_*) implement refresh counters and thresholds 3) State machines contain 60+ states with complex transitions 4) Data paths show masking operations between key shares 5) Error handling logic spans multiple always blocks with 50+ error conditions.",
+  "dependency_summary": "Critical dependencies: 1) Entropy source (EDN) - untrusted input may compromise cryptographic security 2) Key manager interface - high-value target for key extraction 3) Lifecycle controller - critical for security states 4) Interrupt controller - potential denial-of-service vector. Security primitives include: masking logic (keccak_2share), register protection (prim_reg_we_check), and TL-UL integrity (tlul_cmd_intg_chk).",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1262",
+      "cwe_name": "Improper Access Control for Register Interface",
+      "description": "The product uses memory-mapped I/O registers that act as an interface to hardware functionality from software, but there is improper access control to those registers.",
+      "rationale_for_inclusion": "Key registers (KEY_SHARE*) are protected by CFG_REGWEN but AST shows gating logic may be bypassed during certain state transitions. Dependency graph shows direct TL-UL access path to key registers."
+    },
+    {
+      "cwe_id": "CWE-1241",
+      "cwe_name": "Use of Predictable Algorithm in Random Number Generator",
+      "description": "The device uses an algorithm that is predictable and generates a pseudo-random number, compromising cryptographic security.",
+      "rationale_for_inclusion": "Entropy manager (kmac_entropy) uses prim_trivium PRNG. Documentation indicates configurable entropy thresholds (ENTROPY_REFRESH_THRESHOLD) that may be set too high, reducing randomness quality."
+    },
+    {
+      "cwe_id": "CWE-1245",
+      "cwe_name": "Improper Finite State Machines (FSMs) in Hardware Logic",
+      "description": "Faulty finite state machines allow an attacker to put the system in an undefined state, causing DoS or privilege escalation.",
+      "rationale_for_inclusion": "AST shows complex state machines in keccak_round (24 rounds) and kmac_app (60+ states). Dependency analysis reveals 8+ FSMs with potential synchronization issues during error conditions."
+    },
+    {
+      "cwe_id": "CWE-1231",
+      "cwe_name": "Improper Protection of Security Attributes",
+      "description": "Hardware does not properly protect security-sensitive values, such as keys and configuration registers.",
+      "rationale_for_inclusion": "Key material stored in KEY_SHARE* registers persists after operations. Documentation shows insufficient clearing mechanism post-operation, potentially leaving key material in registers."
+    }
+  ]
+}

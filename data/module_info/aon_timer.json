@@ -1,0 +1,181 @@
+{
+  "ip_module_name": "aon_timer",
+  "documentation_analysis": {
+    "executive_summary": "The aon_timer is an always-on timer module with two independent 32-bit upcounting timers: a wakeup timer and a watchdog timer. The wakeup timer features a 12-bit prescaler for extended timeout periods, while the watchdog timer has separate bark (interrupt) and bite (reset) thresholds. It operates on a low-frequency always-on clock (~200kHz) and maintains functionality during sleep/low-power states.",
+    "theory_of_operation": {
+      "core_functionality": "The module provides timekeeping and wakeup capabilities during low-power states. The wakeup timer counts to a programmable 64-bit threshold to trigger wakeup events, while the watchdog timer monitors system activity and triggers interrupts (bark) or system resets (bite) if not serviced. The design includes synchronization logic for cross-clock domain signals.",
+      "state_machines": [
+        {
+          "fsm_name": "Timer Control FSM",
+          "description": "Manages timer enable/disable states and threshold comparisons. Transitions between IDLE, PRESCALE_COUNT, and THRESHOLD_CHECK states based on enable signals and counter values. In THRESHOLD_CHECK state, compares counters against thresholds to trigger interrupts/resets.",
+          "states": ["STATE_IDLE", "STATE_PRESCALE_COUNT", "STATE_THRESHOLD_CHECK"]
+        },
+        {
+          "fsm_name": "Interrupt Handling FSM",
+          "description": "Manages interrupt signaling and clearing. Transitions through IDLE, PENDING, and CLEARED states based on threshold crossings and software writes to interrupt status registers.",
+          "states": ["STATE_IDLE", "STATE_PENDING", "STATE_CLEARED"]
+        }
+      ],
+      "data_flow": "Configuration data flows from TL-UL registers to timer control logic. Wakeup and watchdog counters increment based on the always-on clock. Counter values are compared against software-configured thresholds. When thresholds are crossed, interrupt signals are generated to the interrupt controller and reset requests to the power manager. All register accesses between clock domains use CDC synchronization."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary configuration interface for software to access control registers, set thresholds, and read counter values. Carries read/write commands between the system bus and timer registers.",
+          "potential_vulnerabilities": "Unauthorized register modifications could disable timers, alter thresholds, or clear interrupt states. Protocol violations might cause bus hangs or privilege escalation."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "sleep_mode_i",
+          "direction": "Input",
+          "description": "Indicates system sleep state. Controls whether watchdog pauses counting during sleep (based on wdog_ctrl.pause_in_sleep configuration)."
+        },
+        {
+          "pin_name": "lc_escalate_en_i",
+          "direction": "Input",
+          "description": "Life cycle escalation signal. When asserted, disables timer functionality for security lockdown."
+        },
+        {
+          "pin_name": "wkup_req_o",
+          "direction": "Output",
+          "description": "Wakeup request to power manager when wakeup timer expires."
+        },
+        {
+          "pin_name": "aon_timer_rst_req_o",
+          "direction": "Output",
+          "description": "Reset request to reset manager when watchdog reaches bite threshold."
+        },
+        {
+          "pin_name": "intr_wkup_timer_expired_o",
+          "direction": "Output",
+          "description": "Wakeup timer expiration interrupt."
+        },
+        {
+          "pin_name": "intr_wdog_timer_bark_o",
+          "direction": "Output",
+          "description": "Watchdog bark threshold interrupt."
+        }
+      ],
+      "clocks_and_resets": "Uses two clock domains: system clock (clk_i) for register access and always-on clock (clk_aon_i) for timer logic. Separate resets: system reset (rst_ni) and always-on reset (rst_aon_ni). CDC vulnerabilities exist in register synchronization paths between domains."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "wdog_regwen",
+          "offset": "0x018",
+          "width": 1,
+          "access_type": "RW",
+          "description": "Watchdog register write enable. Must be set to 1 to modify watchdog control registers.",
+          "security_implication": "Critical security control. If improperly managed, attackers could bypass lock to modify watchdog configuration."
+        },
+        {
+          "register_name": "wdog_ctrl",
+          "offset": "0x01c",
+          "width": 2,
+          "access_type": "RW",
+          "description": "Watchdog control register. Bit 0: enable, Bit 1: pause_in_sleep.",
+          "security_implication": "Disabling watchdog or pausing during sleep could prevent security monitoring. Protected by wdog_regwen."
+        },
+        {
+          "register_name": "wdog_bark_thold",
+          "offset": "0x020",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Watchdog bark threshold (interrupt trigger).",
+          "security_implication": "Setting too high could delay security response; too low could cause false interrupts. Protected by wdog_regwen."
+        },
+        {
+          "register_name": "wdog_bite_thold",
+          "offset": "0x024",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Watchdog bite threshold (system reset trigger).",
+          "security_implication": "Critical security setting. Must be > bark_thold. Improper values could prevent resets or cause premature resets. Protected by wdog_regwen."
+        },
+        {
+          "register_name": "wdog_count",
+          "offset": "0x028",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Current watchdog counter value.",
+          "security_implication": "Software writable - attackers could reset counter to prevent expiration, defeating watchdog purpose."
+        },
+        {
+          "register_name": "wkup_ctrl",
+          "offset": "0x000",
+          "width": 13,
+          "access_type": "RW",
+          "description": "Wakeup control register. Bit 0: enable, Bits 12:1: prescaler.",
+          "security_implication": "Disabling could prevent system wakeups; prescaler affects timing accuracy."
+        },
+        {
+          "register_name": "wkup_thold",
+          "offset": "0x004 (lo), 0x008 (hi)",
+          "width": 64,
+          "access_type": "RW",
+          "description": "64-bit wakeup threshold (split across two registers).",
+          "security_implication": "Improper values could cause premature/late wakeups affecting power management."
+        },
+        {
+          "register_name": "wkup_count",
+          "offset": "0x00c (lo), 0x010 (hi)",
+          "width": 64,
+          "access_type": "RW",
+          "description": "Current wakeup counter value.",
+          "security_implication": "Software writable - attackers could manipulate wakeup timing."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "intr_wkup_timer_expired",
+          "description": "Triggered when wakeup counter reaches threshold. Requires software clear. If unhandled, could cause spurious wakeups or miss critical events."
+        },
+        {
+          "interrupt_name": "intr_wdog_timer_bark",
+          "description": "Triggered when watchdog counter reaches bark threshold. Requires software clear and counter reset. Critical for watchdog functionality - unhandled could indicate system hang."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Watchdog Lock",
+        "description": "wdog_regwen register protects critical watchdog configuration registers from modification after lock.",
+        "potential_weaknesses": "Lock state might be bypassed via clock glitching; software might leave unlocked during operation."
+      },
+      {
+        "feature_name": "Life Cycle Escalation",
+        "description": "lc_escalate_en_i input disables timers during security-critical events.",
+        "potential_weaknesses": "Improper synchronization could cause metastability; disabled timers might affect security monitoring."
+      },
+      {
+        "feature_name": "TL-UL Integrity Checks",
+        "description": "Command integrity verification in register interface.",
+        "potential_weaknesses": "Limited to command integrity - data payloads lack cryptographic protection."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "Hierarchical structure with aon_timer top module containing: 1) Synchronizers for sleep_mode and lc_escalate signals, 2) Register interface (aon_timer_reg_top) with CDC for cross-domain registers, 3) Core timer logic (aon_timer_core) implementing counters/threshold checks, 4) Interrupt handling blocks. Core logic uses combinational comparisons for thresholds and sequential counters. Critical security note: wdog_count register is software-writable allowing counter reset.",
+  "dependency_summary": "Depends on: 1) prim_flop_2sync (signal synchronization), 2) prim_lc_sync (lifecycle sync), 3) aon_timer_reg_top (register interface), 4) aon_timer_core (timer logic), 5) prim_intr_hw (interrupt handling). Register module depends on TL-UL components (tlul_cmd_intg_chk, tlul_rsp_intg_gen) and primitives for CDC (prim_reg_cdc) and subregisters. Trust boundary: TL-UL interface is untrusted, while primitive components are trusted.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1262",
+      "cwe_name": "Improper Access Control for Register Interface",
+      "description": "The product uses memory-mapped I/O registers that act as an interface to hardware functionality from software, but there is improper access control to those registers.",
+      "rationale_for_inclusion": "Wakeup timer registers lack lock mechanism, allowing runtime modification. Watchdog count register (wdog_count) is software-writable, enabling attackers to reset counter and prevent security-critical resets."
+    },
+    {
+      "cwe_id": "CWE-1247",
+      "cwe_name": "Improper Protection Against Voltage and Clock Glitches",
+      "description": "The device does not contain or contains incorrectly implemented circuitry or sensors to detect and mitigate voltage and clock glitches.",
+      "rationale_for_inclusion": "As an always-on module in low-power domain, aon_timer is vulnerable to clock/voltage glitching attacks that could disrupt timer operations or bypass security locks (wdog_regwen). No explicit glitch detection mechanisms observed."
+    },
+    {
+      "cwe_id": "CWE-1245",
+      "cwe_name": "Improper Finite State Machines (FSMs) in Hardware Logic",
+      "description": "Faulty finite state machines in the hardware logic allow an attacker to put the system in an undefined state.",
+      "rationale_for_inclusion": "The timer control FSM manages critical functions like interrupt generation and reset triggering. Improper state transitions (e.g., via manipulated inputs) could cause denial-of-service or bypass security monitoring."
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+Based on the comprehensive analysis of the HMAC module using the retrieved documentation, abstract syntax tree, and dependency information, I've generated the structured JSON output as required:
+
+```json
+{
+  "ip_module_name": "hmac",
+  "documentation_analysis": {
+    "executive_summary": "The HMAC module is a SHA-2 hash-based authentication code generator that supports both HMAC and pure SHA-2 modes. It provides cryptographic integrity verification for messages using a secret key and supports SHA-256/384/512 algorithms with configurable key lengths up to 1024 bits. The module features a 32x32-bit message FIFO and context switching capabilities but is not hardened against side-channel or fault injection attacks.",
+    "theory_of_operation": {
+      "core_functionality": "The HMAC core converts the secret key into inner and outer padded keys. In HMAC mode, it performs two rounds of hashing: first with the inner key concatenated with the message, then with the outer key concatenated with the intermediate digest. In SHA-2 mode, it functions as a standard hash accelerator. The module handles endianness conversion and supports configurable digest sizes.",
+      "state_machines": [
+        {
+          "fsm_name": "hmac_core_fsm",
+          "description": "Controls the HMAC processing rounds, transitioning between idle, inner processing, outer processing, and completion states. Manages data flow between the SHA-2 engine, key registers, and message FIFO.",
+          "states": ["IDLE", "INNER_PROCESS", "OUTER_PROCESS", "DONE"]
+        }
+      ],
+      "data_flow": "Message data enters through the TL-UL interface and is stored in the message FIFO after endianness conversion. In HMAC mode, the inner padded key is prepended to the message for the first hash round. The resulting digest is then fed back into the FIFO, prepended with the outer padded key for the second hash round. Final digest results are stored in output registers."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary register interface for configuration, control, and data access. Handles register programming, key loading, message input, and digest output.",
+          "potential_vulnerabilities": "Unauthorized register access could compromise secret keys or manipulate operations. Protocol violations might lead to privilege escalation or denial of service."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "intr_hmac_done_o",
+          "direction": "Output",
+          "description": "Interrupt signal indicating HMAC operation completion."
+        },
+        {
+          "pin_name": "intr_fifo_empty_o",
+          "direction": "Output",
+          "description": "Interrupt signal triggered when message FIFO becomes empty."
+        },
+        {
+          "pin_name": "intr_hmac_err_o",
+          "direction": "Output",
+          "description": "Interrupt signal for HMAC operation errors."
+        },
+        {
+          "pin_name": "alert_tx_o",
+          "direction": "Output",
+          "description": "Alert signal for security-critical errors."
+        }
+      ],
+      "clocks_and_resets": "Single clock domain with asynchronous active-low reset. Potential clock glitching vulnerabilities due to lack of fault injection hardening. Reset manipulation could compromise secret key storage."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CFG",
+          "offset": "0x10",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Configuration register: enables HMAC/SHA modes, digest size (256/384/512), key length (128-1024 bits), and endianness controls.",
+          "security_implication": "Improper configuration could weaken cryptographic security or cause operational failures. Changing modes during operation may expose sensitive intermediate states."
+        },
+        {
+          "register_name": "WIPE_SECRET",
+          "offset": "0x20",
+          "width": 32,
+          "access_type": "WO",
+          "description": "Writing any value clears secret key registers and internal states.",
+          "security_implication": "Unauthorized writes could cause denial of service. Incomplete wiping may leave key residues vulnerable to extraction."
+        },
+        {
+          "register_name": "KEY_0 - KEY_31",
+          "offset": "0x24-0xa0",
+          "width": 1024,
+          "access_type": "WO",
+          "description": "32 write-only registers storing the secret key. Key length configured in CFG register.",
+          "security_implication": "Critical security boundary - exposure compromises all HMAC operations. Must be protected from unauthorized access and clearing."
+        },
+        {
+          "register_name": "DIGEST_0 - DIGEST_15",
+          "offset": "0xa4-0xe0",
+          "width": 512,
+          "access_type": "RW",
+          "description": "16 registers storing output digest. Configurable endianness via CFG register.",
+          "security_implication": "Premature read access could expose intermediate hashing states. Digest swap configuration may leak timing information."
+        },
+        {
+          "register_name": "CMD",
+          "offset": "0x14",
+          "width": 32,
+          "access_type": "WO",
+          "description": "Command register: initiates hash_start, hash_process, hash_stop, and hash_continue operations.",
+          "security_implication": "Improper sequencing could leave sensitive material in registers. Interrupting operations may expose intermediate states."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "hmac_done",
+          "description": "Triggered when HMAC operation completes. Software must clear by writing to INTR_STATE register."
+        },
+        {
+          "interrupt_name": "fifo_empty",
+          "description": "Indicates message FIFO is empty. May signal readiness for new data input."
+        },
+        {
+          "interrupt_name": "hmac_err",
+          "description": "Signals HMAC operational errors including configuration conflicts and FIFO overflows."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Secret Key Wiping",
+        "description": "Hardware clearing of key material via WIPE_SECRET register.",
+        "potential_weaknesses": "Asynchronous clearing may leave residues. No verification of complete erasure."
+      },
+      {
+        "feature_name": "Operational Mode Locking",
+        "description": "Prevents configuration changes during active operations.",
+        "potential_weaknesses": "Locking mechanism may be bypassed through reset glitching or error states."
+      },
+      {
+        "feature_name": "Error Detection",
+        "description": "Identifies configuration conflicts and operational errors via ERR_CODE register and interrupts.",
+        "potential_weaknesses": "Error conditions may not clear sensitive material. Limited diagnostic information."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "The AST reveals a hierarchical structure with three main components: 1) Register interface (hmac_reg_top) implementing TL-UL protocol with 59 registers and integrity checking, 2) Core processing logic (hmac_core) featuring multiple state machines for HMAC rounds and FIFO control, and 3) Top-level integration (hmac) coordinating FIFO, packer, SHA-2 engine, and alert systems. Critical data paths show sensitive key material flowing directly from registers to the SHA-2 engine with minimal intermediate buffering.",
+  "dependency_summary": "The module depends on cryptographic primitives (prim_sha2_32), FIFO controllers (prim_fifo_sync), and TL-UL infrastructure. Key dependencies include: 1) prim_packer for message formatting (potential data manipulation vulnerability), 2) tlul_adapter_sram for bus interfacing (requires strict access controls), and 3) prim_alert_sender for security alerts (must be properly prioritized). All subcomponents are considered trusted but require strict interface validation.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-320",
+      "cwe_name": "Key Management Errors",
+      "description": "Weaknesses in the generation, storage, distribution, or destruction of cryptographic keys.",
+      "rationale_for_inclusion": "Key registers (KEY_0-KEY_31) are directly software-accessible without hardware access controls. Improper key clearing via WIPE_SECRET could leave residues. Documentation explicitly states lack of side-channel protection."
+    },
+    {
+      "cwe_id": "CWE-1231",
+      "cwe_name": "Improper Prevention of Lock Bit Modification",
+      "description": "The product allows an attacker to modify the lock bit that controls access to sensitive resources.",
+      "rationale_for_inclusion": "Configuration register (CFG) locking during operations could be bypassed through fault injection or timing attacks, allowing mode changes during sensitive operations."
+    },
+    {
+      "cwe_id": "CWE-1244",
+      "cwe_name": "Inadequate Protection Against Voltage and Clock Glitches",
+      "description": "The device does not contain sufficient protection mechanisms to mitigate voltage and clock glitches.",
+      "rationale_for_inclusion": "Documentation explicitly states the module is not hardened against fault injection, making it vulnerable to glitching attacks that could extract keys or bypass security checks."
+    },
+    {
+      "cwe_id": "CWE-1271",
+      "cwe_name": "Unrestricted Externally Accessible Lock",
+      "description": "The product improperly protects a lock that controls access to a resource from external actors.",
+      "rationale_for_inclusion": "WIPE_SECRET register allows unrestricted clearing of cryptographic keys without privilege checks, enabling denial-of-service attacks."
+    }
+  ]
+}
+```

@@ -1,0 +1,129 @@
+{
+  "ip_module_name": "ascon",
+  "documentation_analysis": {
+    "executive_summary": "The Ascon module is a cryptographic accelerator implementing the NIST-standardized Ascon authenticated encryption algorithm. It provides hardware acceleration for authenticated encryption/decryption operations using 128-bit keys and tags. The module supports both Ascon-128 (64-bit blocks) and Ascon-128a (128-bit blocks) variants. Key features include shadow registers for critical controls, side-channel countermeasures (planned DOM masking), and secure wipe functionality.",
+    "theory_of_operation": {
+      "core_functionality": "The module performs authenticated encryption/decryption of message (M) and associated data (A) pairs using a unique nonce (N). It initializes a 320-bit sponge state with key and nonce, processes data through permutation rounds (P12 for initialization, Pr per block), and extracts ciphertext/tag. For decryption, it outputs plaintext before verification, requiring software to validate the tag before use.",
+      "state_machines": [
+        {
+          "fsm_name": "Encrypt/Decrypt FSM",
+          "description": "Controls the cryptographic operations sequence: 1) Initialize state with key/nonce, 2) Process associated data blocks (if any) with permutation rounds, 3) Process message blocks with domain separation, 4) Final permutation and tag generation. The FSM enters stall states when input isn't ready or output isn't read.",
+          "states": ["IDLE", "INIT", "PROCESS_AD", "PROCESS_MSG", "FINALIZE", "OUTPUT_TAG", "STALL"]
+        }
+      ],
+      "data_flow": "Key/nonce → state initialization → associated data absorption → message processing → tag generation. Plaintext output occurs before verification in decryption mode. Sensitive data paths include key/nonce input registers and state registers during permutation rounds."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary register interface for software communication. Carries control commands, key/nonce/data inputs, and output results. Accesses 47+ registers including security-critical key/tag registers.",
+          "potential_vulnerabilities": "Protocol violations could bypass access controls; unverified plaintext output in decryption mode could lead to early release; register access control flaws could expose keys."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "alert_tx_o",
+          "direction": "Output",
+          "description": "Security alert signals for recoverable/fatal errors"
+        },
+        {
+          "pin_name": "lc_escalate_en_i",
+          "direction": "Input",
+          "description": "Lifecycle escalation signal that triggers secure wipe"
+        },
+        {
+          "pin_name": "edn_o.edn_req",
+          "direction": "Output",
+          "description": "Entropy request to EDN for masking/wipe operations"
+        }
+      ],
+      "clocks_and_resets": "Uses clk_i (main clock) and clk_edn_i (entropy clock). Cross-clock domain synchronization between clk_i and clk_edn_i via prim_sync_reqack_data could introduce metastability risks if not properly synchronized."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CTRL_SHADOWED",
+          "offset": "0x94",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Main control register (shadowed). Controls operation mode (encrypt/decrypt), sideload key usage, and masking flags.",
+          "security_implication": "Requires two consecutive writes to update. Single-write attempts trigger recoverable alerts. Controls security-critical functions like key usage and masking."
+        },
+        {
+          "register_name": "KEY_SHARE0_0",
+          "offset": "0x04",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Key share register (part 0 of masking)",
+          "security_implication": "Holds sensitive key material. Writes are ignored when module is busy. Requires proper access controls to prevent exposure."
+        },
+        {
+          "register_name": "TRIGGER",
+          "offset": "0xa4",
+          "width": 32,
+          "access_type": "RW",
+          "description": "Operation trigger register. START initiates crypto operations, WIPE clears sensitive data.",
+          "security_implication": "Improper sequencing (e.g., wipe before completion) could leave residual sensitive data in registers."
+        },
+        {
+          "register_name": "FSM_STATE",
+          "offset": "0xb0",
+          "width": 32,
+          "access_type": "RO",
+          "description": "Current state of the cryptographic FSM",
+          "security_implication": "Reveals internal operation state which could aid side-channel attacks if accessible during operation."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "recov_ctrl_update_err",
+          "description": "Triggered when shadow register update sequence fails (single-write attempt). Indicates potential fault injection attempt."
+        },
+        {
+          "interrupt_name": "fatal_fault",
+          "description": "Triggered for unrecoverable errors (e.g., persistent FSM corruption). Requires full reset to recover."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Shadow Registers",
+        "description": "Critical control registers (CTRL, CTRL_AUX, BLOCK_CTRL) require two consecutive writes for updates to prevent fault injection.",
+        "potential_weaknesses": "State tracking for two-write sequence could be vulnerable to glitching; error signals might not be immediately propagated."
+      },
+      {
+        "feature_name": "Secure Wipe",
+        "description": "TRIGGER.WIPE clears sensitive registers with entropy from EDN before reset. Prevents key material persistence.",
+        "potential_weaknesses": "Entropy source failure could leave keys intact; wipe might not cover all intermediate states."
+      },
+      {
+        "feature_name": "DOM Masking (Planned)",
+        "description": "Future implementation of Domain-Oriented Masking to protect against 1st-order side-channel attacks.",
+        "potential_weaknesses": "Current implementation lacks masking; interim vulnerability to power/EM side-channels."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "Core module (ascon_core) shows minimal behavioral logic with alert outputs tied low. Register module (ascon_reg_top) is highly complex with 47+ register instances and 51-statement always blocks handling shadow register sequencing. Security-critical patterns: 1) Shadow registers implemented with prim_subreg_shadow and update sequencing logic, 2) Key registers (key_share*) use prim_subreg_ext with qualified writes, 3) FSM state register has read-enable control (fsm_state_regren), 4) Error status registers capture various fault conditions.",
+  "dependency_summary": "Critical dependencies: 1) tlul_adapter_reg for register bus interface (potential access control vulnerabilities), 2) prim_subreg_shadow for protected control registers, 3) prim_sync_reqack_data for EDN clock domain crossing. External entropy source (EDN) is trusted for secure wipe operations. Register primitives are trusted components but depend on correct configuration.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1245",
+      "cwe_name": "Improper Finite State Machines (FSMs) in Hardware Logic",
+      "description": "Faulty finite state machines (FSMs) in the hardware logic allow an attacker to put the system in an undefined state, to cause a denial of service (DoS) or gain privileges on the victim's system.",
+      "rationale_for_inclusion": "The cryptographic FSM controls security-critical operations and has multiple stall states. Undefined state transitions could bypass security checks or leak sensitive data via STATUS.STALL indications."
+    },
+    {
+      "cwe_id": "CWE-1262",
+      "cwe_name": "Improper Access Control for Register Interface",
+      "description": "The product uses memory-mapped I/O registers that act as an interface to hardware functionality from software, but there is improper access control to those registers.",
+      "rationale_for_inclusion": "Register access control is implemented through tlul_adapter_reg. Misconfiguration could expose key registers (KEY_SHARE*) or allow improper FSM control via TRIGGER/CTRL registers."
+    },
+    {
+      "cwe_id": "CWE-1300",
+      "cwe_name": "Improper Protection of Physical Side Channels",
+      "description": "The device does not contain sufficient protection mechanisms to prevent physical side channels from exposing sensitive information due to patterns in physically observable phenomena such as variations in power consumption.",
+      "rationale_for_inclusion": "The core lacks implemented DOM masking (currently planned), making it vulnerable to power/EM side-channel attacks during cryptographic operations per documentation. AST shows no current masking logic."
+    }
+  ]
+}

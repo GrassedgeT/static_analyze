@@ -1,0 +1,203 @@
+{
+  "main": {
+    "id": "0dcc72b5cd13847a",
+    "type": "split",
+    "children": [
+      {
+        "id": "801e607fdd3b7977",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "0eee2c6edbcb784f",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "新标签页"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "fe35f9eeea0eeba6",
+    "type": "split",
+    "children": [
+      {
+        "id": "8b9820cb68afdc34",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "7a39a29e8cd94dfc",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "ac2eda923a86a7f8",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "6b65619ad855f504",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "c64ade5751688200",
+    "type": "split",
+    "children": [
+      {
+        "id": "d176525d51c2f675",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "7eb076aa3a677a6d",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "反向链接"
+            }
+          },
+          {
+            "id": "9fcbb5c83f9559a6",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "出链"
+            }
+          },
+          {
+            "id": "3e719b9c22fd8bbf",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "61678f45f12fd45a",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false
+    }
+  },
+  "active": "0eee2c6edbcb784f",
+  "lastOpenFiles": [
+    "doc_files/hack@ches_p1_25_doc_contributing_ci_README.md",
+    "doc_files/hack@ches_p1_25_doc_contributing_bazel_notes.md",
+    "doc_files/hack@ches_p1_25_doc_contributing_detailed_contribution_guide_README.md",
+    "doc_files/hack@ches_p1_25_doc_use_cases_tpm_README.md",
+    "src/__pycache__/dependency_tools.cpython-313.pyc",
+    "storage/cwe_store/chroma.sqlite3-journal",
+    "storage/docs_store/chroma.sqlite3-journal",
+    "src/__pycache__/rag.cpython-313.pyc",
+    "src/__pycache__/ast_tools.cpython-313.pyc",
+    "src/dependency_tools.py",
+    "src/agent3.py",
+    "src/agent2.py",
+    "src/agent1.py",
+    "storage/docs_store/c24fda6a-18f7-4e8a-9bfc-9373d1c46c79/index_metadata.pickle",
+    "doc_files/hack@ches_p1_25_util_uvmdvgen_README.md",
+    "doc_files/hack@ches_p1_25_util_topgen_README.md",
+    "doc_files/hack@ches_p1_25_util_tlgen_README.md",
+    "doc_files/hack@ches_p1_25_util_reggen_doc_setup_and_use.md",
+    "doc_files/hack@ches_p1_25_util_reggen_README.md",
+    "doc_files/hack@ches_p1_25_util_ipgen_README.md",
+    "doc_files/hack@ches_p1_25_util_i2csvg_README.md",
+    "doc_files/hack@ches_p1_25_util_fpvgen_README.md",
+    "doc_files/hack@ches_p1_25_util_dvsim_doc_testplanner.md",
+    "doc_files/hack@ches_p1_25_util_dvsim_doc_glossary.md",
+    "doc_files/hack@ches_p1_25_util_dvsim_doc_design_doc.md",
+    "doc_files/hack@ches_p1_25_util_dvsim_README.md",
+    "doc_files/hack@ches_p1_25_util_doc_vendor.md",
+    "doc_files/hack@ches_p1_25_util_design_README.md",
+    "doc_files/hack@ches_p1_25_util_container_README.md",
+    "doc_files/hack@ches_p1_25_util_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_tpm2_test_server_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_ot_certs_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_opentitantool_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_opentitansession_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_opentitanlib_README.md",
+    "doc_files/hack@ches_p1_25_sw_host_hsmtool_doc_requirements.md"
+  ]
+}
