@@ -78,45 +78,44 @@ def analyze_module_dependencies(module_name):
     dependency_graph_dict = dict(dependency_graph)
     reverse_dependencies_dict = dict(reverse_dependencies)
     
-    # Create a NetworkX graph for visualization
-    G = nx.DiGraph()
+    # # Create a NetworkX graph for visualization
+    # G = nx.DiGraph()
     
-    # Add nodes and edges
-    for module, dependencies in dependency_graph_dict.items():
-        G.add_node(module)
-        for dep in dependencies:
-            G.add_edge(module, dep)
+    # # Add nodes and edges
+    # for module, dependencies in dependency_graph_dict.items():
+    #     G.add_node(module)
+    #     for dep in dependencies:
+    #         G.add_edge(module, dep)
     
-    # Create a reduced graph if we started with a specific module
-    if module_name:
-        if module_name == "prim_generic":
-            return {
-                'dependency_graph': dependency_graph_dict,
-                'reverse_dependencies': reverse_dependencies_dict,
-                'instance_map': instance_map,
-                'nx_graph': {},
-                'module_to_file': module_to_file
-            }
-        # Only include nodes that are reachable from start_module or that have a path to start_module
-        reachable_nodes = set(nx.descendants(G, module_name)) | {module_name}
-        nodes_with_path_to_start = set()
-        for node in G.nodes():
-            try:
-                if nx.has_path(G, node, module_name):
-                    nodes_with_path_to_start.add(node)
-            except:
-                pass
+    # # Create a reduced graph if we started with a specific module
+    # if module_name:
+    #     if module_name == "prim_generic":
+    #         return {
+    #             'dependency_graph': dependency_graph_dict,
+    #             'reverse_dependencies': reverse_dependencies_dict,
+    #             'instance_map': instance_map,
+    #             'nx_graph': {},
+    #             'module_to_file': module_to_file
+    #         }
+    #     # Only include nodes that are reachable from start_module or that have a path to start_module
+    #     reachable_nodes = set(nx.descendants(G, module_name)) | {module_name}
+    #     nodes_with_path_to_start = set()
+    #     for node in G.nodes():
+    #         try:
+    #             if nx.has_path(G, node, module_name):
+    #                 nodes_with_path_to_start.add(node)
+    #         except:
+    #             pass
         
-        relevant_nodes = reachable_nodes | nodes_with_path_to_start
-        G_reduced = G.subgraph(relevant_nodes).copy()
-    else:
-        G_reduced = G
+    #     relevant_nodes = reachable_nodes | nodes_with_path_to_start
+    #     G_reduced = G.subgraph(relevant_nodes).copy()
+    # else:
+    #     G_reduced = G
     
     return {
         'dependency_graph': dependency_graph_dict,
         'reverse_dependencies': reverse_dependencies_dict,
         'instance_map': instance_map,
-        'nx_graph': G_reduced,
         'module_to_file': module_to_file
     }
 analyze_module_dependencies("tlul")

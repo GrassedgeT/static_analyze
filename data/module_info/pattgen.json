@@ -1,5 +1,3 @@
-Based on the comprehensive analysis of the pattgen module documentation, AST, and dependencies, here is the structured vulnerability analysis report:
-
 ```json
 {
   "ip_module_name": "pattgen",

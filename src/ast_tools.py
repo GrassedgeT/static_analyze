@@ -279,15 +279,16 @@ def analyze_sv_ast_old(module_name):
 # Load ASTs from cache or parse them if not available
 rtl_files = get_all_svfiles()
 
-if 'ast_trees' not in locals():
-    pickle_path = '../data/ast_trees.pkl'
-    if os.path.exists(pickle_path):
-        with open(pickle_path, 'rb') as f:
-            ast_trees = pickle.load(f)
-    else:
-        ast_trees = parse_sv_files(rtl_files)
-        os.makedirs(os.path.dirname(pickle_path), exist_ok=True)
-        with open(pickle_path, 'wb') as f:
-            pickle.dump(ast_trees, f)
+pickle_path = '../data/ast_trees.pkl'
+if os.path.exists(pickle_path):
+    with open(pickle_path, 'rb') as f:
+        ast_trees = pickle.load(f)
+else:
+    ast_trees = parse_sv_files(rtl_files)
+    os.makedirs(os.path.dirname(pickle_path), exist_ok=True)
+    with open(pickle_path, 'wb') as f:
+        pickle.dump(ast_trees, f)
 
 print("ast_tools initialized, ready to use.")
+
+# %%

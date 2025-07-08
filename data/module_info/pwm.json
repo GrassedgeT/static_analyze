@@ -1,115 +1,134 @@
+```json
 {
   "ip_module_name": "pwm",
   "documentation_analysis": {
-    "executive_summary": "The PWM module generates pulse-width modulated signals with configurable duty cycles, primarily for LED control. It features 6 independent output channels with programmable resolution (1-16 bits), hardware-controlled blink modes, and separate clock domains for bus interface and core operations.",
+    "executive_summary": "The Pulse-Width Modulation (PWM) module is a general-purpose IP designed to generate PWM signals with adjustable duty cycles, primarily for controlling tri-color LEDs. It features a parameterizable number of output channels (up to 6), with independent control over duty cycle, phase, and polarity for each. The IP operates with separate clock domains for the TL-UL bus interface and the core logic, allowing it to continue functioning in low-power states. Key features include a hardware-controlled blink mode that toggles between two duty cycles and a heartbeat mode for linear sweeps, a programmable pulse frequency via a 27-bit clock divider, and adjustable resolution for fine-grained control.",
     "theory_of_operation": {
-      "core_functionality": "Generates PWM signals by comparing a phase counter against configurable duty cycle thresholds. Supports standard PWM, blinking (toggling between two duty cycles), and heartbeat (linear sweep) modes. All channels share the same base frequency set by a 27-bit clock divider.",
+      "core_functionality": "The PWM module generates pulse trains for multiple output channels. All channels share a common pulse frequency determined by a global clock divider (CFG.CLK_DIV) and a resolution setting (CFG.DC_RESN). The core of the IP is a central phase counter that increments based on the divided core clock. For each channel, a comparator uses the phase counter's value along with channel-specific parameters (phase delay, duty cycle) to generate the final PWM output. The module supports three main modes per channel: standard (fixed duty cycle), blinking (toggling between two duty cycles), and heartbeat (linearly sweeping the duty cycle).",
       "state_machines": [
         {
-          "fsm_name": "Phase Counter State Machine",
-          "description": "Manages the core PWM timing. States: IDLE (counter disabled), COUNTING (active phase counting), OVERFLOW (cycle completion). Transitions controlled by CFG.CNTR_EN register. Overflow triggers new PWM cycle and blink counter updates.",
-          "states": ["STATE_IDLE", "STATE_COUNTING", "STATE_OVERFLOW"]
+          "fsm_name": "Phase Counter",
+          "description": "This is the primary counter that determines the base PWM period for all channels. It is located in the `pwm_core` module. Its increment value and overflow point are determined by the `CFG.CLK_DIV` and `CFG.DC_RESN` registers. The counter is enabled by `CFG.CNTR_EN`; disabling this bit resets the counter to zero. This FSM's state (the counter value) is fundamental to the timing of all PWM outputs.",
+          "states": [
+            "IDLE (counter disabled)",
+            "COUNTING"
+          ]
         },
         {
-          "fsm_name": "Blink Control State Machine",
-          "description": "Per-channel state machine for blink/heartbeat modes. States: PHASE_A (first duty cycle), PHASE_B (second duty cycle), TRANSITION (duty cycle transition). Transitions controlled by blink counters and cycle_end signals.",
-          "states": ["STATE_PHASE_A", "STATE_PHASE_B", "STATE_TRANSITION"]
+          "fsm_name": "Blink/Heartbeat Counter",
+          "description": "Located within each `pwm_chan` instance, this counter controls the blinking and heartbeat effects. When `blink_en` is active for a channel, this counter determines when to switch between the two programmed duty cycles (A and B) or when to increment/decrement the duty cycle for the heartbeat effect. Its behavior is governed by the `BLINK_PARAM` registers (x and y fields). It is reset when the blink/heartbeat feature is disabled.",
+          "states": [
+            "IDLE",
+            "COUNT_X (for duty cycle A)",
+            "COUNT_Y (for duty cycle B)"
+          ]
         }
       ],
-      "data_flow": "Register values → CDC synchronization → Duty cycle calculation → Phase comparator → Output inversion. Critical path includes duty_cycle registers through blink logic to phase comparators. Unchecked data paths in blink parameter calculations (blink_param_x_i + blink_param_y_i + 1) could cause overflow."
+      "data_flow": "Configuration data is written by software via the TL-UL bus interface, which operates in the `clk_i` clock domain. These register writes (e.g., to `CFG`, `PWM_EN`, `DUTY_CYCLE_n`, `PWM_PARAM_n`) are synchronized to the `clk_core_i` domain via dedicated Clock Domain Crossing (CDC) modules (`prim_reg_cdc`). The synchronized configuration values are then fed from the `pwm_reg_top` module to the `pwm_core` and `pwm_chan` modules. The `pwm_core` uses `CFG` values to drive the main phase counter. Each `pwm_chan` instance uses its specific parameters (duty cycle, blink settings, etc.) along with the global phase counter value to compute its final PWM output signal, which is then driven to the physical `pwm_o` pins."
     },
     "interfaces_and_attack_surfaces": {
       "bus_interfaces": [
         {
           "interface_type": "TileLink Uncached Lite (TL-UL)",
-          "description": "Primary configuration interface for all registers. Handles register reads/writes and alert signaling. Connects to system bus.",
-          "potential_vulnerabilities": "Unauthorized register modification, bus integrity violations, register interface protocol exploits."
+          "description": "The TL-UL interface is the primary control and configuration port for the PWM module. It allows the host processor to write to and read from the PWM's control and status registers, such as setting the clock divider, enabling channels, and configuring duty cycles.",
+          "potential_vulnerabilities": "As the main configuration interface, it is a primary attack surface. Malicious or incorrect values written to registers could lead to denial-of-service (e.g., by setting a near-zero clock divider or disabling all channels) or unexpected behavior in peripherals controlled by the PWM signals. The interface is protected by an end-to-end bus integrity scheme."
         }
       ],
       "direct_io": [
         {
-          "pin_name": "pwm[5:0]",
+          "pin_name": "pwm_o[5:0]",
           "direction": "Output",
-          "description": "PWM output signals for 6 channels. Directly controls external devices."
+          "description": "These are the six physical output pins carrying the generated PWM waveforms."
         }
       ],
-      "clocks_and_resets": "Dual-clock domain: clk_i (TL-UL bus), clk_core_i (PWM core). 23 CDC synchronizers (prim_reg_cdc) for register transfer. Potential CDC metastability risks between domains. Reset signals: rst_ni (bus), rst_core_ni (core)."
+      "clocks_and_resets": "The module uses two primary clocks: `clk_i` for the TL-UL bus interface and `clk_core_i` for the core PWM logic. This dual-clock design allows the bus to be shut down while the PWM core continues to operate, supporting low-power modes. The design relies heavily on `prim_reg_cdc` instances for safe synchronization of configuration data from the bus clock domain to the core clock domain. An issue in the CDC logic could lead to metastability and unpredictable behavior. The module is reset by `rst_ni` and `rst_core_ni` for their respective domains."
     },
     "programming_model": {
       "register_map_analysis": [
         {
           "register_name": "REGWEN",
           "offset": "0x4",
-          "width": "32",
+          "width": 32,
           "access_type": "RW",
-          "description": "Global register write enable. Must be set to 1 to modify control registers.",
-          "security_implication": "Improper lock bit protection could allow unauthorized configuration changes (CWE-1231)."
+          "description": "Register write enable for all other control registers. When this register is set to 1, the other configuration registers can be written to. If set to 0, writes are ignored.",
+          "security_implication": "This register acts as a primary lock. If software does not properly clear this bit after configuration, it leaves the PWM module's configuration vulnerable to accidental or malicious modification."
         },
         {
           "register_name": "CFG",
           "offset": "0x8",
-          "width": "32",
+          "width": 32,
           "access_type": "RW",
-          "description": "Main configuration: CLK_DIV (27b frequency divider), DC_RESN (4b resolution), CNTR_EN (1b enable).",
-          "security_implication": "Critical security setting. Changing during operation may disrupt PWM outputs. Requires CNTR_EN=0 for updates."
+          "description": "Contains global configuration fields: `CNTR_EN` (enables the main phase counter), `DC_RESN` (sets the duty cycle resolution), and `CLK_DIV` (sets the PWM frequency).",
+          "security_implication": "Improper configuration of `CLK_DIV` or `DC_RESN` can lead to unpredictable PWM frequencies or resolutions, potentially causing a denial-of-service or damage to the attached hardware. Changes only take effect when `CNTR_EN` is disabled, which provides some protection against glitches."
         },
         {
           "register_name": "PWM_EN",
           "offset": "0xc",
-          "width": "32",
+          "width": 32,
           "access_type": "RW",
-          "description": "Per-channel enable bits.",
-          "security_implication": "Disabling channels could cause denial-of-service. No hardware protection against malicious disable."
+          "description": "A 6-bit register to enable or disable each of the 6 PWM output channels independently.",
+          "security_implication": "An attacker could disable critical outputs (e.g., a visual indicator) by clearing bits in this register."
         },
         {
-          "register_name": "PWM_PARAM_0..5",
-          "offset": "0x14-0x28",
-          "width": "32",
+          "register_name": "INVERT",
+          "offset": "0x10",
+          "width": 32,
           "access_type": "RW",
-          "description": "Per-channel parameters: phase delay (16b), blink/heartbeat enables.",
-          "security_implication": "Phase delay modification could disrupt synchronized systems. No range checking on phase delay values."
+          "description": "A 6-bit register to invert the polarity of each of the 6 PWM output channels independently.",
+          "security_implication": "Unexpectedly inverting the output could cause attached components to behave in an unsafe manner (e.g., turning a motor in the wrong direction or turning an indicator on when it should be off)."
+        },
+        {
+          "register_name": "DUTY_CYCLE_n (n=0-5)",
+          "offset": "0x2c - 0x40",
+          "width": 32,
+          "access_type": "RW",
+          "description": "A set of registers, one for each channel, that defines the duty cycles for standard and blinking modes (fields A and B).",
+          "security_implication": "This directly controls the PWM output. Malicious writes can set the duty cycle to 0% or 100%, effectively turning the output constantly off or on, leading to a functional failure or DoS."
+        },
+        {
+            "register_name": "PWM_PARAM_n (n=0-5)",
+            "offset": "0x14 - 0x28",
+            "width": 32,
+            "access_type": "RW",
+            "description": "Per-channel registers to configure phase delay, and to enable blink or heartbeat modes.",
+            "security_implication": "Improper configuration of phase delays could, as noted in the documentation, lead to a DoS attack by creating large current spikes if all channels are fired simultaneously. Enabling blink/heartbeat mode without correctly setting the corresponding DUTY_CYCLE and BLINK_PARAM registers could lead to undefined behavior."
         }
       ],
       "interrupts": []
     },
     "security_features": [
       {
-        "feature_name": "TL-UL Bus Integrity",
-        "description": "End-to-end integrity checking using tlul_cmd_intg_chk and tlul_rsp_intg_gen modules to detect bus tampering.",
-        "potential_weaknesses": "Only protects bus transactions, not internal data paths. Does not cover CDC synchronization paths."
+        "feature_name": "Register Access Controls",
+        "description": "The `REGWEN` register serves as a write-enable for most other configuration registers. Software is expected to set this register, perform configuration, and then clear it to prevent accidental overwrites.",
+        "potential_weaknesses": "This is a software-dependent protection. If the software fails to clear the `REGWEN` bit, the registers remain writable, negating the protection."
       },
       {
-        "feature_name": "Register Write Protection",
-        "description": "REGWEN register gates writes to critical configuration registers.",
-        "potential_weaknesses": "Single-bit lock with no hardware enforcement of modification constraints (CWE-1231)."
+        "feature_name": "PWM.BUS.INTEGRITY",
+        "description": "The module documentation mentions an end-to-end bus integrity scheme for the TL-UL interface, which protects against data corruption on the bus.",
+        "potential_weaknesses": "This protects against bus-level faults but offers no protection against logically incorrect data being written by authorized but malicious software."
       },
       {
-        "feature_name": "CDC Synchronization",
-        "description": "23 instances of prim_reg_cdc for clock domain crossing between bus and core clocks.",
-        "potential_weaknesses": "Potential metastability risks if timing constraints violated. No apparent glitch protection (CWE-662)."
+        "feature_name": "Fatal Fault Alert",
+        "description": "A `fatal_fault` alert is triggered upon detection of a fatal TL-UL bus integrity fault. This is handled by the `prim_alert_sender` instance.",
+        "potential_weaknesses": "The system's response to this alert determines its effectiveness. If the alert is ignored or improperly handled, the system may continue in an insecure state."
       }
     ]
   },
-  "abstract_syntax_tree_summary": "Hierarchical structure: pwm (top) → pwm_reg_top (register interface) + pwm_core (PWM logic). pwm_core instantiates 6 pwm_chan instances. Key observations: 1) Extensive CDC synchronization (23 prim_reg_cdc instances), 2) Complex duty cycle calculations with potential overflow in blink logic (blink_param_x_i + blink_param_y_i + 1), 3) Finite state machines in pwm_chan with 8-23 statements per always block, 4) Register protection via REGWEN implemented with prim_subreg.",
-  "dependency_summary": "Critical dependencies: 1) tlul components (bus integrity), 2) prim_reg_cdc (CDC synchronization), 3) prim_subreg (register implementation). Attack surfaces: 1) TL-UL interface (external-facing), 2) CDC synchronization paths (potential metastability), 3) Register interface (REGWEN bypass attempts). Trust boundaries: tlul* and prim* are trusted components, but pwm_chan contains complex application logic with potential vulnerabilities.",
+  "abstract_syntax_tree_summary": "The abstract syntax tree reveals a clear separation between the register interface (`pwm_reg_top.sv`) and the core logic (`pwm_core.sv`, `pwm_chan.sv`). `pwm_reg_top` is heavily populated with `prim_reg_cdc` instances, confirming the two-clock-domain architecture and highlighting the critical role of these synchronizers in maintaining stability. The logic in `pwm_core.sv` centers on the `phase_ctr_q`, which acts as the base timekeeper. The most complex logic resides in `pwm_chan.sv`, which implements the per-channel duty cycle and blink/heartbeat calculations. The expressions for `duty_cycle_actual` and the various counter updates (`blink_ctr_d`, `htbt_ctr_d`) involve multiple conditional checks based on register values, making them prime candidates for logic errors or unexpected behavior under specific configurations.",
+  "dependency_summary": "The `pwm` module is a wrapper for `pwm_reg_top`, `pwm_core`, and `prim_alert_sender`. `pwm_reg_top` relies on standard OpenTitan primitives for the TL-UL bus interface (`tlul_adapter_reg`, `tlul_cmd_intg_chk`) and clock domain crossing (`prim_reg_cdc`), which are considered trusted components. `pwm_core`'s only dependency is `pwm_chan`. This indicates that the primary external interaction boundary is the TL-UL bus interface in `pwm_reg_top`. Attack vectors would originate from a hostile host processor writing malicious register values through this interface, rather than from interactions with other custom IPs.",
   "potential_cwe_identification": [
     {
       "cwe_id": "CWE-1271",
       "cwe_name": "Uninitialized Value on Reset for Registers Holding Security Settings",
-      "description": "Security-critical logic is not set to a known value on reset, creating insecure state windows.",
-      "rationale_for_inclusion": "Phase counter and blink state machines may have undefined states after reset. AST shows no explicit reset initialization for pwm_chan internal state variables beyond register defaults."
+      "description": "Security-critical logic is not set to a known value on reset.",
+      "rationale_for_inclusion": "The PWM module's behavior is entirely dictated by its configuration registers. While the registers themselves have defined reset values, their configuration determines the state of the internal counters (Phase, Blink, Heartbeat). If the `CFG.CNTR_EN` bit were to be '1' at reset without the other parameters being explicitly set by software, the state machines could start operating with potentially insecure default values. The security depends on software initializing the device correctly before enabling the counters."
     },
     {
-      "cwe_id": "CWE-662",
-      "cwe_name": "Improper Synchronization",
-      "description": "Inadequate synchronization between multiple clock domains can cause metastability.",
-      "rationale_for_inclusion": "23 CDC paths between clk_i and clk_core_i domains. AST shows CDC synchronizers but no apparent glitch protection or metastability analysis in the code structure."
-    },
-    {
-      "cwe_id": "CWE-1231",
-      "cwe_name": "Improper Prevention of Lock Bit Modification",
-      "description": "Failure to properly protect lock bits controlling critical resources.",
-      "rationale_for_inclusion": "REGWEN lock bit controls all configuration registers but is implemented as a standard RW register (prim_subreg) without hardware-enforced modification constraints after locking."
+      "cwe_id": "CWE-20",
+      "cwe_name": "Improper Input Validation",
+      "description": "The product receives input or data, but it does not validate or incorrectly validates that the input has the properties that are required to process the data safely and correctly.",
+      "rationale_for_inclusion": "The PWM module accepts a wide range of values for its configuration registers, such as `CFG.CLK_DIV`, `PWM_PARAM_n.PHASE_DELAY_n`, and `DUTY_CYCLE_n`. The documentation explicitly warns that improper configuration of phase delays can pose a DoS risk. There appears to be no internal hardware validation to prevent software from writing dangerous combinations of parameters, such as a very small `CLK_DIV` value which could dramatically increase the PWM frequency and power consumption, or setting phase delays for all channels to zero, maximizing current spikes. The hardware trusts the input from software completely."
     }
   ]
 }
+```

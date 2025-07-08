@@ -1,0 +1,187 @@
+```json
+{
+  "ip_module_name": "aes",
+  "documentation_analysis": {
+    "executive_summary": "The AES unit is a cryptographic accelerator peripheral that supports AES-128, AES-192, and AES-256 encryption and decryption. It implements several standard block cipher modes including ECB, CBC, CFB, OFB, and CTR. The module is designed with security as a primary consideration, incorporating countermeasures against side-channel analysis (SCA) and fault injection (FI) attacks, such as 1st-order masking, multi-rail FSMs, and sparse state encodings. It communicates with the system via a TL-UL bus interface for register-based configuration and data transfer, and includes an optional interface for sideloading keys directly from a key manager.",
+    "theory_of_operation": {
+      "core_functionality": "The AES unit uses a single, shared datapath for both encryption and decryption, meaning it can only perform one operation at a time. A key feature is the on-the-fly generation of round keys from a single initial key provided by the processor. This reduces storage requirements and the attack surface, as intermediate round keys are not stored in accessible registers. The datapath's core submodules are combinational, with sequential logic limited to the State, Full Key, and Decryption Key registers, which are not exposed on the bus interface. This architecture allows for overlapping operations; the processor can write the next data block or read the previous output block while the current block is being processed. The unit will stall if software does not read the output data before the next block is ready, preventing data loss.",
+      "state_machines": [
+        {
+          "fsm_name": "aes_control_fsm",
+          "description": "This is the main control FSM. It manages the overall operation of the AES unit, handling the starting and stopping of cryptographic operations based on triggers from the TRIGGER register or automatic mode. It sequences the loading of the key, IV, and data, and controls the status signals (e.g., INPUT_READY, OUTPUT_VALID). It is implemented with multi-rail logic and sparse encoding to protect against fault injection.",
+          "states": [
+            "IDLE",
+            "KEY_IV_LOAD",
+            "DATA_LOAD",
+            "ENCRYPT_DECRYPT",
+            "DATA_WRITEBACK"
+          ]
+        },
+        {
+          "fsm_name": "aes_cipher_control_fsm",
+          "description": "This FSM controls the core cryptographic pipeline, managing the individual rounds of the AES algorithm. It directs the flow of data through the SubBytes, ShiftRows, MixColumns, and AddRoundKey stages. It also controls the on-the-fly key expansion process in coordination with the main control FSM. It features a hardened, multi-rail round counter to prevent fault attacks intended to skip rounds.",
+          "states": [
+            "ROUND_START",
+            "SUB_BYTES",
+            "SHIFT_ROWS",
+            "MIX_COLUMNS",
+            "ADD_ROUND_KEY",
+            "ROUND_FINISH"
+          ]
+        },
+        {
+          "fsm_name": "aes_ctr_fsm",
+          "description": "This Finite State Machine is specific to the Counter (CTR) mode. It is responsible for incrementing the counter value (derived from the IV) for each block of data being processed. It has built-in checks to detect errors in the counter increment operation.",
+          "states": [
+            "IDLE",
+            "INCR",
+            "READY",
+            "ERROR"
+          ]
+        }
+      ],
+      "data_flow": "Data processing begins when the processor writes configuration to the CTRL_SHADOWED register, followed by the key shares (KEY_SHARE0/1) and, if needed, the Initialization Vector (IV). The input plaintext/ciphertext is then written to the DATA_IN registers. When triggered, the aes_control_fsm initiates the operation. The data is loaded into the internal, unexposed State register. The aes_cipher_core module, controlled by aes_cipher_control_fsm, performs the rounds of encryption or decryption, sourcing round keys from the on-the-fly key expansion logic. The final output is placed in the DATA_OUT registers, and the OUTPUT_VALID status bit is set. The processor can then read the result. The internal state and key registers are not directly accessible, and internal data paths are masked to prevent SCA."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "This is the primary interface for software interaction. It is used to access the Control and Status Registers (CSRs) for configuring the AES mode, writing the key and IV, providing input data, triggering operations, and reading output data.",
+          "potential_vulnerabilities": "Improper access control at the system interconnect level could allow unauthorized modules to access the AES registers. Malicious software could attempt to manipulate the control registers (e.g., CTRL_SHADOWED, TRIGGER) to disrupt operations, or attempt timing attacks by observing the duration of cryptographic operations."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "keymgr_key_i",
+          "direction": "Input",
+          "description": "An optional interface for sideloading a key directly from the key manager. This avoids exposing the key on the main system bus."
+        },
+        {
+          "pin_name": "edn_o / edn_i",
+          "direction": "Output/Input",
+          "description": "Interface to the Entropy Distribution Network (EDN) used to fetch fresh entropy for PRNGs that generate masking data and pseudo-random data for wiping registers."
+        },
+        {
+          "pin_name": "alert_tx_o / alert_rx_i",
+          "direction": "Output/Input",
+          "description": "Interface to the alert handler for signaling fatal and recoverable errors detected by the hardware security countermeasures."
+        },
+        {
+          "pin_name": "lc_escalate_en_i",
+          "direction": "Input",
+          "description": "Input from the lifecycle controller. When asserted, it can force the module into an error state, clearing internal sensitive data."
+        }
+      ],
+      "clocks_and_resets": "The module operates on a primary clock (`clk_i`) and reset (`rst_ni`). It also has a separate clock (`clk_edn_i`) and reset (`rst_edn_ni`) for the entropy interface, indicating a clock domain crossing (CDC) between the main AES logic and the EDN. A separate shadowed reset (`rst_shadowed_ni`) is used for the shadowed control registers. Incorrect handling of CDC can be a source of metastability and faults."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CTRL_SHADOWED",
+          "offset": "0x74",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Shadowed control register for mode, operation type, and key length. Being shadowed, it requires two writes to commit a value, which helps prevent accidental or glitched modifications.",
+          "security_implication": "This is a highly critical register. Any unintended modification can lead to incorrect cryptographic operations, potentially weakening or nullifying the encryption. A fault injection attack on the write process could bypass the shadowing mechanism."
+        },
+        {
+          "register_name": "CTRL_AUX_REGWEN",
+          "offset": "0x7C",
+          "width": "32",
+          "access_type": "RW",
+          "description": "A lock bit for the CTRL_AUX_SHADOWED register. Once set, it prevents further writes to the auxiliary control register.",
+          "security_implication": "If not locked, an attacker could change auxiliary security features like 'key_touch_forces_reseed' or 'force_masks' after initial configuration."
+        },
+        {
+          "register_name": "TRIGGER",
+          "offset": "0x80",
+          "width": "32",
+          "access_type": "W1S",
+          "description": "Register to manually trigger operations like 'start', 'key_iv_data_in_clear', and 'data_out_clear'.",
+          "security_implication": "An attacker with register access could repeatedly trigger these actions to perform DoS attacks or attempt to glitch the FSM during state transitions. The `key_iv_data_in_clear` trigger could be used to wipe a key prematurely."
+        },
+        {
+          "register_name": "KEY_SHARE0_0 - KEY_SHARE1_7",
+          "offset": "0x14 - 0x40",
+          "width": "32",
+          "access_type": "WO",
+          "description": "Write-only registers for the two shares of the initial key.",
+          "security_implication": "These registers hold the most sensitive secret. Being write-only prevents direct read-back by software. However, the key is present in these registers until cleared, making it a target for physical attacks or data leakage if the clearing mechanism fails."
+        },
+        {
+          "register_name": "DATA_IN_0 - DATA_IN_3",
+          "offset": "0x54 - 0x60",
+          "width": "32",
+          "access_type": "WO",
+          "description": "Input data registers for plaintext or ciphertext.",
+          "security_implication": "These registers act as a buffer for data to be processed. No direct security implication beyond holding the data to be encrypted/decrypted."
+        },
+        {
+          "register_name": "DATA_OUT_0 - DATA_OUT_3",
+          "offset": "0x64 - 0x70",
+          "width": "32",
+          "access_type": "RO",
+          "description": "Read-only registers for the output data.",
+          "security_implication": "Holds the result of the cryptographic operation. If software fails to read the data before the next operation completes (in auto-mode), the `OUTPUT_LOST` status bit is set, indicating data was overwritten. This could be a denial-of-service vector."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "N/A",
+          "description": "The AES peripheral does not provide interrupts. Software must poll the STATUS register to determine when an operation is complete (OUTPUT_VALID) or when it's ready for new input (INPUT_READY)."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "1st-order Masking (SCA Countermeasure)",
+        "description": "The entire cipher core, including the state and key expansion path, is duplicated to operate on two shares of the data and key. This is a form of Domain-Oriented Masking (DOM). The intention is to make the power consumption and electromagnetic emissions independent of the actual secret values, thus thwarting SCA.",
+        "potential_weaknesses": "The effectiveness of masking is highly dependent on the quality of the random data used to generate the masks. The entropy is sourced from the EDN via the `aes_prng_masking` module. A predictable or biased PRNG can break the countermeasure. Furthermore, physical implementation details like routing can introduce early-propagating signals that unintentionally unmask values."
+      },
+      {
+        "feature_name": "Multi-rail FSMs and Sparse Encoding (FI Countermeasure)",
+        "description": "The main control FSMs use redundant, independent logic rails and one-hot or sparse state encodings. The outputs of the rails are continuously compared. Any mismatch, likely caused by a fault injection attack, triggers an alert.",
+        "potential_weaknesses": "A sophisticated fault injection attack could potentially affect all redundant rails simultaneously, bypassing the detection mechanism. The complexity of the redundant logic might also introduce other design bugs."
+      },
+      {
+        "feature_name": "Hardened Round Counter",
+        "description": "The counter that tracks the AES rounds is also implemented with multi-rail redundancy to prevent fault attacks that aim to reduce the number of encryption rounds, which would be a catastrophic cryptographic break.",
+        "potential_weaknesses": "Similar to the FSMs, this is vulnerable to an attack that can fault all rails in the same way simultaneously."
+      },
+      {
+        "feature_name": "Register and State Wiping",
+        "description": "Key, IV, and data registers are cleared with pseudo-random data on reset and upon explicit commands. The internal state is cleared after the final round to prevent leakage of intermediate values.",
+        "potential_weaknesses": "The clearing mechanism relies on the availability and quality of pseudo-random data. If the PRNG fails or is stalled, the clearing might be ineffective. A fault during a clear operation could leave sensitive data remnant in registers."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "The Abstract Syntax Tree reveals a hierarchical design with `aes.sv` at the top, which wraps the main `aes_core.sv` and the register file `aes_reg_top.sv`. The core logic in `aes_core.sv` is further modularized. `aes_control.sv` and `aes_cipher_control.sv` manage the main FSMs that orchestrate the operations. The cryptographic operations themselves are broken down into `aes_sub_bytes.sv`, `aes_shift_rows.sv`, `aes_mix_columns.sv`, and `aes_key_expand.sv`. A key observation is the parameterization of the S-Box implementation (`SecSBoxImpl`), allowing for different versions such as LUT-based, or masked variants (`aes_sbox_dom.sv`, `aes_sbox_canright_masked.sv`). This parameterization is a critical configuration point for security. The dataflow models in `aes_core.sv` show the masking application, where `state_init` is an XOR of input shares and a mask (`state_in ^ add_state_in ^ state_mask`), making the masking mechanism explicit in the design.",
+  "dependency_summary": "The `aes` module has critical external dependencies on `keymgr` for sideloading keys, `edn` for entropy, `lc_ctrl` for lifecycle state, and the `tlul` bus for software commands. The trust boundary is primarily with software running on the host processor communicating over the TL-UL bus. The `keymgr`, `edn`, and `lc_ctrl` are considered trusted hardware components, but their interfaces are attack vectors if not properly secured. Internally, the design is highly modular. `aes_core` depends on numerous sub-modules for each step of the AES algorithm. A notable dependency is `aes_sbox` and its various implementations, indicating that the core substitution operation, a cornerstone of AES security, is a pluggable component. This highlights the importance of verifying which S-Box implementation is used in any given instantiation of the IP.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1271",
+      "cwe_name": "Uninitialized Value on Reset for Registers Holding Security Settings",
+      "description": "When the device is first brought out of reset, the state of registers will be indeterminate if they have not been initialized by the logic. Before the registers are initialized, there will be a window during which the device is in an insecure state and may be vulnerable to attack.",
+      "rationale_for_inclusion": "The AES module's security posture is heavily dependent on the initial state of its control registers (e.g., `CTRL_SHADOWED`). The documentation states that registers are cleared with pseudo-random data. However, a failure or delay in the pseudo-random number generator (`aes_prng_clearing`) at startup could lead to a brief period where security settings are in an unknown or insecure state before software has a chance to configure them, potentially allowing for unintended operations."
+    },
+    {
+      "cwe_id": "CWE-1241",
+      "cwe_name": "Use of Predictable Algorithm in Random Number Generator",
+      "description": "A predictable algorithm is used to generate random numbers. The use of a predictable algorithm can lead to a violation of security assumptions that are based on the use of unpredictable random numbers.",
+      "rationale_for_inclusion": "The module's security against side-channel attacks relies entirely on its 1st-order masking scheme. This scheme's effectiveness depends on the unpredictability of the masks generated by the `aes_prng_masking` module, which uses `prim_trivium`. If the entropy sourced from the EDN is weak or the PRNG stream becomes predictable, an attacker could defeat the masking and extract secret key information through SCA."
+    },
+    {
+      "cwe_id": "CWE-1240",
+      "cwe_name": "Use of a Cryptographic Primitive with a Risky Implementation",
+      "description": "To fulfill the need for a cryptographic primitive, the product implements a cryptographic algorithm using a non-standard, unproven, or disallowed/non-compliant cryptographic implementation.",
+      "rationale_for_inclusion": "The AST shows that the S-Box, a critical component of AES, is a modularized primitive with multiple implementations available (LUT, DOM, masked). The `SecSBoxImpl` parameter controls which implementation is synthesized. A simple Look-Up Table (LUT) implementation (`aes_sbox_lut.sv`) is highly susceptible to timing and power-based side-channel attacks. If the IP is instantiated with this risky, unmasked implementation in a security-sensitive context, it would present a major vulnerability."
+    },
+    {
+      "cwe_id": "CWE-1272",
+      "cwe_name": "Sensitive Information Uncleared Before Debug/Power State Transition",
+      "description": "The product performs a power or debug state transition, but it does not clear sensitive information that should no longer be accessible due to changes to information access restrictions.",
+      "rationale_for_inclusion": "The design includes mechanisms to clear internal state. However, the `aes_core` module contains internal registers for the state (`state_q`) and round keys (`key_full_q`) that hold sensitive data during an operation. A fault injection attack that causes an unexpected reset or power state transition, or that bypasses a clearing trigger (like `key_iv_data_in_clear`), could potentially leave sensitive data remnant in these internal, unexposed registers. Subsequent analysis through debug interfaces or other side-channels might then be able to extract this data."
+    }
+  ]
+}
+```

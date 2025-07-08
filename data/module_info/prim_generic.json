@@ -1,5 +1,3 @@
-Based on the extensive research and analysis of the `prim_generic` IP module in OpenTitan, I've compiled a comprehensive vulnerability analysis report in the required JSON format:
-
 ```json
 {
   "ip_module_name": "prim_generic",

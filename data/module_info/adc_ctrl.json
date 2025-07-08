@@ -1,5 +1,3 @@
-Based on the comprehensive analysis of the adc_ctrl module, I've generated the structured JSON report:
-
 ```json
 {
   "ip_module_name": "adc_ctrl",

@@ -1,5 +1,3 @@
-Based on the comprehensive analysis of the csrng module in OpenTitan, including its documentation, implementation details, syntax tree, dependencies, and relevant CWEs, I've prepared the structured JSON output:
-
 ```json
 {
   "ip_module_name": "csrng",

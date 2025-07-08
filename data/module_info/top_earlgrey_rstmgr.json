@@ -1,0 +1,153 @@
+```json
+{
+  "ip_module_name": "top_earlgrey_rstmgr",
+  "documentation_analysis": {
+    "executive_summary": "The Reset Manager (rstmgr) is a critical IP module responsible for generating and managing all reset signals for the entire OpenTitan SoC. It handles power-on reset (POR), software-initiated resets for the full system and individual peripherals, and reset requests from the power manager. It also provides diagnostic information by capturing CPU and alert states just before a reset occurs. Its central role in system stability and recovery makes it a primary target for security analysis.",
+    "theory_of_operation": {
+      "core_functionality": "The rstmgr's core function is to be the central authority for all reset-related activities. It stretches the initial power-on-reset to ensure the system stabilizes. It generates a cascade of resets for different power and clock domains based on requests from the power manager (pwrmgr), software (via registers), or other hardware signals. It also includes security checks to ensure the consistency and integrity of reset signals.",
+      "state_machines": [
+        {
+          "fsm_name": "Reset Request FSM",
+          "description": "Although not explicitly named as a single FSM in the documentation, the rstmgr implements a core state machine that manages incoming reset requests (rst_lc_req, rst_sys_req) from the power manager. This FSM waits for the requests, coordinates with the source to acknowledge them, generates the appropriate reset cascade, and then waits for the source to de-assert the request before returning to an active state. A failure or hang in this handshake mechanism could result in a denial of service.",
+          "states": ["Active", "ResetRequested", "WaitForSourceAck", "GenerateReset", "WaitForSourceRelease"]
+        }
+      ],
+      "data_flow": "Data flows into rstmgr primarily through its TL-UL register interface, where software can write to registers to request resets or configure crash dump capture. Hardware signals from the power manager (pwr_i) also serve as a key input to trigger resets. The outputs are the various reset and reset-enable signals (resets_o, rst_en_o) that are distributed throughout the chip to other IP blocks. Sensitive data, such as CPU state (cpu_dump_i) and alert information (alert_dump_i), flows into crash dump registers, which are readable by software after a reset."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "The rstmgr has a single TL-UL slave interface for software access to its control and status registers. This is the primary attack surface for software-based attacks.",
+          "potential_vulnerabilities": "Unauthorized writes to reset control registers could lead to denial of service or system compromise. The integrity of the bus protocol itself is protected by `tlul_cmd_intg_chk` and `tlul_rsp_intg_gen` modules, but logical vulnerabilities in register access control remain a concern."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "por_n_i",
+          "direction": "Input",
+          "description": "The main power-on-reset signal that initiates the reset sequence for the entire chip."
+        },
+        {
+          "pin_name": "pwr_i",
+          "direction": "Input",
+          "description": "A bundle of signals from the power manager (pwrmgr) that requests system or life-cycle resets."
+        },
+        {
+          "pin_name": "scan_rst_ni",
+          "direction": "Input",
+          "description": "An asynchronous reset signal used during scan testing."
+        },
+        {
+          "pin_name": "resets_o",
+          "direction": "Output",
+          "description": "The main output bundle containing all the generated reset signals for the various peripherals and clock domains."
+        },
+        {
+          "pin_name": "alert_tx_o",
+          "direction": "Output",
+          "description": "Alert signal sent to the alert_handler."
+        }
+      ],
+      "clocks_and_resets": "The rstmgr operates on multiple input clocks (clk_por_i, clk_aon_i, clk_main_i, etc.) to manage resets in different clock domains. It is the source of all derived resets in the chip. The design's heavy reliance on synchronizers (`prim_flop_2sync`) and explicit clock domain handling is critical. Potential risks exist for Clock Domain Crossing (CDC) issues or glitches if the reset consistency checks (`rstmgr_cnsty_chk`) are flawed or can be bypassed."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "RESET_REQ",
+          "offset": "0x4",
+          "width": "32",
+          "access_type": "WO",
+          "description": "A write-only register that allows software to request a system reset. Writing specific multi-bit values triggers the reset.",
+          "security_implication": "A primary mechanism for software to induce a system reset. Any unauthorized write can cause an immediate denial of service. This register is not protected by a REGWEN."
+        },
+        {
+          "register_name": "RESET_INFO",
+          "offset": "0x8",
+          "width": "32",
+          "access_type": "RO",
+          "description": "A read-only register that records the reason for the last reset (e.g., POR, low-power exit, software request, hardware request).",
+          "security_implication": "Provides critical diagnostic information. If this register can be tampered with or misread, it could mislead forensic analysis or cause software to take incorrect recovery actions."
+        },
+        {
+          "register_name": "SW_RST_CTRL_N_0 through SW_RST_CTRL_N_7",
+          "offset": "0x4c - 0x68",
+          "width": "32",
+          "access_type": "RW",
+          "description": "A set of registers that allows software to individually assert the reset for most peripherals in the system.",
+          "security_implication": "Directly controls the reset state of peripherals. An attacker with write access could disable specific hardware (DoS) or reset a peripheral into an insecure state. Access is gated by the corresponding SW_RST_REGWEN registers."
+        },
+        {
+          "register_name": "SW_RST_REGWEN_0 through SW_RST_REGWEN_7",
+          "offset": "0x2c - 0x48",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Register write-enable for the SW_RST_CTRL_N registers. Must be set to true to allow writes to the corresponding control register.",
+          "security_implication": "This is a key security feature. If this register can be written when it should be locked, the software reset controls are compromised. It acts as a lock, but the logic governing its own writability is critical."
+        },
+        {
+          "register_name": "ALERT_INFO_CTRL",
+          "offset": "0x10",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Controls the capture of alert information before a reset.",
+          "security_implication": "Controls what diagnostic information is saved. An attacker could disable capturing or manipulate the index to obscure the cause of a security event."
+        },
+        {
+          "register_name": "CPU_INFO_CTRL",
+          "offset": "0x20",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Controls the capture of CPU state information before a reset.",
+          "security_implication": "Controls what diagnostic information is saved. An attacker could disable capturing or manipulate the index to obscure the cause of a security event."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "fatal_fault",
+          "description": "Triggered by consistency checks failing or FSM entering an illegal state. This is a critical alert."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Reset Consistency Checks",
+        "description": "The `rstmgr_cnsty_chk` submodule is instantiated for leaf resets. It ensures that when a parent reset is asserted, the child reset also becomes asserted within a specific timeframe (SecMaxSyncDelay). This protects against reset-related glitch attacks or CDC issues that could cause a peripheral to miss a reset.",
+        "potential_weaknesses": "The check is time-based. A sufficiently sophisticated glitch or clock manipulation attack might be able to defeat the timing assumption. The check can also be disabled via the `SecCheck` parameter at design time."
+      },
+      {
+        "feature_name": "Software Reset Write-Enable (REGWEN)",
+        "description": "Most critical registers, especially the `SW_RST_CTRL_N` registers that control peripheral resets, are protected by a corresponding `SW_RST_REGWEN` register. The `REGWEN` must be enabled before the `CTRL` register can be modified.",
+        "potential_weaknesses": "This is a single layer of protection. If an attacker finds a way to write to the `REGWEN` register itself, the protection is nullified. The security relies on software correctly managing the `REGWEN` locks."
+      },
+      {
+        "feature_name": "Crash Dump Capture",
+        "description": "The rstmgr captures the state of alerts and the CPU in always-on registers (`ALERT_INFO`, `CPU_INFO`) when a reset is triggered by a hardware request. This is intended to provide forensic information after a crash.",
+        "potential_weaknesses": "The crash dump mechanism itself could be a target. If the capture can be selectively disabled or the stored data altered before it is read by recovery software, an attacker could cover their tracks."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "The AST reveals a hierarchical and distributed reset architecture. The top `rstmgr.sv` module instantiates many `rstmgr_leaf_rst` modules, one for each reset/clock domain combination, which enforces the reset hierarchy. The `rstmgr_reg_top.sv` module handles the software interface, heavily using `prim_subreg` and `prim_subreg_ext` to implement the register file. The dataflow models in `rstmgr_reg_top` clearly show that writes to specific address offsets (`addr_hit`) are decoded into write enable signals for individual registers (e.g., `reset_req_we`, `sw_rst_ctrl_n_0_we`). The security-critical gating logic is visible in expressions like `sw_rst_ctrl_n_0_gated_we <= sw_rst_ctrl_n_0_we & sw_rst_regwen_0_qs`, directly linking the `REGWEN` registers to the control registers. The `rstmgr_ctrl` module appears to handle the logic for power manager requested resets.",
+  "dependency_summary": "The `rstmgr` is a central hub in the design, depending on low-level primitives like `prim_flop_2sync`, `prim_clock_mux2`, and `prim_mubi4_sync` for safe clock and reset handling. It directly instantiates and controls its sub-modules: `rstmgr_reg_top` (register interface), `rstmgr_ctrl` (reset control logic), `rstmgr_leaf_rst` (distributed reset generation), `rstmgr_por` (power-on-reset logic), and `rstmgr_crash_info` (dump storage). The most critical dependency is its interaction with the Power Manager (pwrmgr), from which it receives reset requests. It has no external dependencies beyond the trusted primitives and system bus. Conversely, nearly every other module in the system depends on `rstmgr` for its reset signal, making its integrity paramount.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1245",
+      "cwe_name": "Improper Finite State Machines (FSMs) in Hardware Logic",
+      "description": "Faulty finite state machines (FSMs) in the hardware logic allow an attacker to put the system in an undefined state, to cause a denial of service (DoS) or gain privileges on the victim's system.",
+      "rationale_for_inclusion": "The core logic of the rstmgr, which processes reset requests from software (`RESET_REQ` register) and the power manager, is a complex state machine. A logic flaw could lead to a state where resets are not propagated correctly, are asserted indefinitely, or the system hangs, leading to a Denial of Service. The `rstmgr_cnsty_chk` module also contains an FSM to check reset timing, and the AST shows `kAlwaysStatement` blocks that implement FSMs, which could contain vulnerabilities."
+    },
+    {
+      "cwe_id": "CWE-284",
+      "cwe_name": "Improper Access Control",
+      "description": "The product does not restrict or incorrectly restricts access to a resource from an unauthorized actor.",
+      "rationale_for_inclusion": "The `SW_RST_CTRL_N` registers provide direct, fine-grained control over peripheral resets. While protected by `SW_RST_REGWEN` registers, any software vulnerability that allows writing to the `REGWEN` registers would break this access control scheme. An attacker who can bypass this protection can selectively disable critical peripherals like the spi_device or usb, leading to a targeted Denial of Service."
+    },
+    {
+      "cwe_id": "CWE-1304",
+      "cwe_name": "Improperly Preserved Integrity of Hardware Configuration State During a Power Save/Restore Operation",
+      "description": "The product performs a power save/restore operation, but it does not ensure that the integrity of the configuration state is maintained and/or verified between the beginning and ending of the operation.",
+      "rationale_for_inclusion": "The rstmgr stores `ALERT_INFO` and `CPU_INFO` in an always-on domain across resets. This is analogous to a power save/restore operation for that state. If an attacker could somehow influence or corrupt this always-on data (e.g., through fault injection or other side channels), it could potentially mislead post-reset analysis or cause the system to enter an insecure state upon recovery, as the software might trust this information implicitly."
+    }
+  ]
+}
+```

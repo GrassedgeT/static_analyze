@@ -1,5 +1,3 @@
-Based on the comprehensive analysis of the OpenTitan EDN module, here is the structured JSON output with all findings:
-
 ```json
 {
   "ip_module_name": "edn",

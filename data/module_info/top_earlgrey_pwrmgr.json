@@ -1,0 +1,143 @@
+```json
+{
+  "ip_module_name": "top_earlgrey_pwrmgr",
+  "documentation_analysis": {
+    "executive_summary": "The pwrmgr module sequences power, clocks, and reset resources through cold boot, low power entry/exit, and reset scenarios. It controls power domains, manages clock enables, handles wakeup events, and coordinates with other security-critical modules like rstmgr and AST.",
+    "theory_of_operation": {
+      "core_functionality": "Manages power state transitions between active, low-power sleep, and deep sleep modes. Sequences power-up activities including OTP sensing, life cycle initiation, and ROM integrity checks. Controls clock domains and reset assertions across the system.",
+      "state_machines": [
+        {
+          "fsm_name": "Slow FSM",
+          "description": "Operates in slow clock domain, handles low-power state transitions, power domain control, and clock enable sequencing. Manages interactions with always-on domain.",
+          "states": ["Active", "LowPowerSleep", "DeepSleep"]
+        },
+        {
+          "fsm_name": "Fast FSM",
+          "description": "Operates in main clock domain, handles reset sequencing, wakeup event processing, and coordination with security modules. Manages ROM integrity checks and life cycle initialization.",
+          "states": ["ResetHold", "InitSequence", "Active", "LowPowerEntry"]
+        }
+      ],
+      "data_flow": "Wakeup events → WAKEUP_EN register → Wake Status → FSM processing → Power control signals. Reset requests → RESET_EN register → Reset Status → Reset sequencing. Critical security signals use MUBI encoding and CDC synchronization."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary configuration interface for register access. Carries commands to set power states, enable wakeups/resets, and read status.",
+          "potential_vulnerabilities": "Unauthorized register modifications, bus integrity attacks, configuration lock bypass"
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "clk_slow_i",
+          "direction": "Input",
+          "description": "Always-on slow clock for low-power state management"
+        },
+        {
+          "pin_name": "clk_lc_i",
+          "direction": "Input",
+          "description": "Life cycle controller clock for security-critical operations"
+        },
+        {
+          "pin_name": "pwr_ast_o",
+          "direction": "Output",
+          "description": "Power control signals to Analog Sensor Top (AST)"
+        }
+      ],
+      "clocks_and_resets": "Multiple clock domains (clk_i, clk_slow_i, clk_lc_i, clk_esc_i) with CDC synchronization. Reset signals include rst_ni (main), rst_slow_ni (slow domain), rst_lc_ni (life cycle), rst_esc_ni (escalation). CDC vulnerabilities could cause metastability in state machines."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CONTROL",
+          "offset": "0x14",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Controls core functionality: main_pd_n (main power domain), core_clk_en, io_clk_en, usb_clk_en flags",
+          "security_implication": "Misconfiguration can disable critical power domains or clocks. Protected by CTRL_CFG_REGWEN."
+        },
+        {
+          "register_name": "WAKEUP_EN",
+          "offset": "0x20",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Enable mask for wakeup sources (sysrst, debug cable, USB, etc.)",
+          "security_implication": "Disabling critical wakeups could prevent system recovery. Enabling malicious wakeups could bypass security states."
+        },
+        {
+          "register_name": "RESET_EN",
+          "offset": "0x2c",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Enable mask for reset sources (escalation, watchdog, software requests)",
+          "security_implication": "Unauthorized enables could trigger denial-of-service via forced resets."
+        },
+        {
+          "register_name": "CFG_CDC_SYNC",
+          "offset": "0x18",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Synchronizes configuration across clock domains",
+          "security_implication": "Improper use could cause configuration mismatches between domains"
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "intr_wakeup",
+          "description": "Triggered when wakeup event occurs. Software must handle wakeup source identification and system re-initialization."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "Configuration Register Locking",
+        "description": "CTRL_CFG_REGWEN, WAKEUP_EN_REGWEN, RESET_EN_REGWEN registers protect critical configuration fields from runtime modification.",
+        "potential_weaknesses": "Hardware glitches could bypass lock bits; lock state not maintained across power cycles"
+      },
+      {
+        "feature_name": "MUBI Signal Encoding",
+        "description": "Critical signals (rom_ctrl_done, lc control signals) use multi-bit encoding to prevent single-bit flips.",
+        "potential_weaknesses": "Inconsistent encoding checks across domains could create vulnerabilities"
+      },
+      {
+        "feature_name": "FSM Security",
+        "description": "Sparse state encoding and terminal error states prevent invalid state progression. Global escalation forces reset on error.",
+        "potential_weaknesses": "Complex state transitions increase verification challenges; potential for deadlocks"
+      },
+      {
+        "feature_name": "Escalation Timeout",
+        "description": "prim_clock_timeout monitors escalation signals with background checks and local reset escalation.",
+        "potential_weaknesses": "Timeout duration might be predictable; clock glitches could bypass"
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "Module hierarchy: pwrmgr (top) instantiates pwrmgr_fsm (fast FSM), pwrmgr_slow_fsm (slow FSM), pwrmgr_cdc (clock domain crossing), and pwrmgr_wake_info. Complex FSMs with 20+ statement always blocks handle state transitions. CDC uses prim_flop_2sync synchronizers and prim_pulse_sync for pulse crossing. Dataflow models show wakeup cause tracking through toggle-based change detection. Security-critical paths include: ROM integrity check bypass logic based on lc_dft_en_i, escalation signal handling with timeout detection.",
+  "dependency_summary": "Critical dependencies: rstmgr (reset management), clkmgr (clock control), AST (power/clock monitoring), rom_ctrl (ROM integrity). Trusted components: prim_* libraries (synchronizers, MUBI handlers). Attack vectors: TL-UL bus interface (configuration attacks), wakeup/reset input signals (malicious wakeups/resets), escalation receiver interface (timeout attacks). CDC paths between fast/slow domains are particularly vulnerable to synchronization failures.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1231",
+      "cwe_name": "Improper Prevention of Lock Bit Modification",
+      "description": "The product defines a lock bit that prevents modification, but the product does not prevent the lock bit from being modified.",
+      "rationale_for_inclusion": "CTRL_CFG_REGWEN lock bit protects critical CONTROL register but could be modified via hardware glitches or improper CDC handling between clock domains."
+    },
+    {
+      "cwe_id": "CWE-1313",
+      "cwe_name": "Hardware Allows Activation of Test or Debug Logic at Runtime",
+      "description": "Security-sensitive assets may be accessed through test/debug interfaces during runtime.",
+      "rationale_for_inclusion": "ROM integrity check bypass based on lc_dft_en_i and lc_hw_debug_en_i signals could allow debug modes to disable security checks during operation."
+    },
+    {
+      "cwe_id": "CWE-362",
+      "cwe_name": "Concurrent Execution using Shared Resource with Improper Synchronization",
+      "description": "The product contains a code sequence that can run concurrently with other code, and the sequence requires temporary, exclusive access to a shared resource, but a timing window exists in which the shared resource can be modified by another code sequence that is running concurrently.",
+      "rationale_for_inclusion": "Multiple CDC paths (pwrmgr_cdc) between fast and slow clock domains without proper synchronization could lead to race conditions in FSM state transitions."
+    },
+    {
+      "cwe_id": "CWE-1331",
+      "cwe_name": "Improper Isolation of Shared Resources in Network On Chip",
+      "description": "The Network On Chip does not properly isolate shared resources between trusted and untrusted agents.",
+      "rationale_for_inclusion": "TL-UL bus interface allows configuration changes that could affect power/reset states of security-critical components without proper access control."
+    }
+  ]
+}
+```

@@ -1,0 +1,142 @@
+```json
+{
+  "ip_module_name": "spi_host",
+  "documentation_analysis": {
+    "executive_summary": "The spi_host module is an SPI host controller IP that provides hardware-level control for SPI devices. It supports standard, dual, and quad SPI modes with configurable timing parameters. The module features separate TX/RX FIFOs (288B TX, 256B RX), programmable watermark interrupts, error detection, and a pass-through mode for external SPI controller access. Its primary purpose is to communicate with SPI devices like serial NOR flash while offloading timing-critical operations from software.",
+    "theory_of_operation": {
+      "core_functionality": "The core functionality involves processing command segments written to the COMMAND register, which triggers the state machine to generate SPI transactions. Data flows through FIFOs before being serialized/deserialized. The module supports configurable clock polarities, phases, chip select timing, and transaction lengths. Key components include: command FIFO, data FIFOs, byte packers/unpackers, shift register, and the main FSM controller.",
+      "state_machines": [
+        {
+          "fsm_name": "SPI Transaction Controller",
+          "description": "Manages SPI protocol timing including chip select assertion/deassertion, clock generation, and data shifting. Transitions between states (Idle, WaitLead, Command, Address, Dummy, Data) based on segment type and byte counters. Controls when data is sampled/shifted and handles inter-segment timing.",
+          "states": ["Idle", "WaitLead", "InternalClkHigh", "InternalClkLow", "Command", "Address", "Dummy", "Data"]
+        },
+        {
+          "fsm_name": "FIFO Management",
+          "description": "Controls data flow between register interface and SPI core. Manages FIFO pointers, watermark detection, and stall conditions. State transitions based on FIFO fill levels and core readiness.",
+          "states": ["Empty", "BelowWM", "AboveWM", "Full"]
+        }
+      ],
+      "data_flow": "1. Commands written to COMMAND register → Command FIFO → Core FSM. 2. TX data written to TXDATA → TX FIFO → Byte Select → Shift Register → SD lines. 3. RX data from SD lines → Shift Register → Byte Merge → RX FIFO → RXDATA register. Critical paths: Unvalidated command parameters directly control FSM behavior; TX/RX data paths lack hardware integrity checks."
+    },
+    "interfaces_and_attack_surfaces": {
+      "bus_interfaces": [
+        {
+          "interface_type": "TileLink Uncached Lite (TL-UL)",
+          "description": "Primary configuration and data interface. Used to program registers, write TX data, and read RX data. Carries all control commands and payload data.",
+          "potential_vulnerabilities": "Unauthenticated register access could allow configuration manipulation; DMA-like access to FIFOs could enable buffer overflow; protocol violations might cause system instability."
+        }
+      ],
+      "direct_io": [
+        {
+          "pin_name": "sck",
+          "direction": "Output",
+          "description": "SPI clock signal. Frequency derived from CLKDIV configuration."
+        },
+        {
+          "pin_name": "csb[NumCS-1:0]",
+          "direction": "Output",
+          "description": "Chip select signals (active low). Selected by CSID register."
+        },
+        {
+          "pin_name": "sd[3:0]",
+          "direction": "InOut",
+          "description": "Bidirectional data lines. Direction controlled by FSM during transactions."
+        }
+      ],
+      "clocks_and_resets": "Single clock domain (clk_i). Reset via SW_RST register or system reset. No clock domain crossing (CDC) protection needed internally. Main security risk: Glitching attacks on clock or reset could disrupt FSM state."
+    },
+    "programming_model": {
+      "register_map_analysis": [
+        {
+          "register_name": "CONTROL",
+          "offset": "0x10",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Global control: SPIEN (enable), SW_RST (reset IP), OUTPUT_EN (enable IOs), TX_WATERMARK, RX_WATERMARK.",
+          "security_implication": "SW_RST clears all state including security configurations; SPIEN disable during transactions may cause data loss; OUTPUT_EN=0 could create backdoor if passthrough active."
+        },
+        {
+          "register_name": "COMMAND",
+          "offset": "0x20",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Command segment: DIRECTION (None/RxOnly/TxOnly/Bidir), MODE (Std/Dual/Quad), LEN (byte count), CSAAT (keep CS asserted).",
+          "security_implication": "Invalid configurations (e.g., LEN > FIFO size) cause errors; CSAAT misuse could leave devices selected; DIRECTION mismatch may corrupt data."
+        },
+        {
+          "register_name": "CONFIGOPTS",
+          "offset": "0x18",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Per-CS timing: CLKDIV, CSNIDLE, CSNLEAD, CSNTRAIL, CPOL, CPHA, FULLCYC.",
+          "security_implication": "Timing misconfiguration could violate device specs; FULLCYC=1 enables continuous clocking that might leak data via power analysis."
+        },
+        {
+          "register_name": "ERROR_ENABLE",
+          "offset": "0x2c",
+          "width": "32",
+          "access_type": "RW",
+          "description": "Enables error interrupts: ACCESSINVAL, CSIDINVAL, CMDINVAL, UNDERFLOW, OVERFLOW, CMDBUSY.",
+          "security_implication": "Disabling critical error reporting could mask attacks; error conditions don't auto-clear - requires software handling."
+        }
+      ],
+      "interrupts": [
+        {
+          "interrupt_name": "error",
+          "description": "Fired when enabled error occurs (FIFO overflow/underflow, invalid command/access). Requires software to clear ERROR_STATUS. Improper handling may miss consecutive errors or cause interrupt storms."
+        },
+        {
+          "interrupt_name": "spi_event",
+          "description": "Triggered by enabled events (FIFO watermarks, idle state, ready status). Used for flow control. Incorrect prioritization may cause transaction delays or data loss."
+        }
+      ]
+    },
+    "security_features": [
+      {
+        "feature_name": "TL-UL Bus Integrity",
+        "description": "End-to-end integrity checking via tlul_cmd_intg_chk and tlul_rsp_intg_gen modules to detect bus tampering.",
+        "potential_weaknesses": "Only detects faults but doesn't prevent them; fatal_fault alert doesn't automatically disable module."
+      },
+      {
+        "feature_name": "Register Access Control",
+        "description": "Register write protections via prim_reg_we_check. Some registers have privileged access requirements.",
+        "potential_weaknesses": "No hardware-enforced privilege separation; access control depends on system-level permissions."
+      },
+      {
+        "feature_name": "Passthrough Mode",
+        "description": "Allows SPI_DEVICE to take control of SPI bus via passthrough_i signals when enabled.",
+        "potential_weaknesses": "No authentication of passthrough requests; simultaneous host/passthrough access could cause bus conflicts."
+      }
+    ]
+  },
+  "abstract_syntax_tree_summary": "The AST reveals critical structures: 1) Command FIFO (spi_host_command_queue) buffers commands before execution. 2) Data FIFOs (spi_host_data_fifos) use prim_fifo_sync with depth 72 (TX) and 256 (RX). 3) Core controller (spi_host_core) coordinates byte packers (spi_host_byte_select/merge), shift register (spi_host_shift_register), and FSM (spi_host_fsm). 4) FSM contains complex state transitions with 15+ states and sensitive control signals. Vulnerable areas: FIFO pointers lack overflow protection; shift register directly exposes SD lines without sanitization; FSM state transitions controlled by unvalidated registers.",
+  "dependency_summary": "Key dependencies: 1) TL-UL adapters (tlul_adapter_reg/sram) - potential bus protocol vulnerabilities. 2) Primitive FIFOs (prim_fifo_sync) - trusted but depth-limited. 3) Interrupt handlers (prim_intr_hw) - trusted. 4) Alert sender (prim_alert_sender) - trusted. Attack vectors: Malicious TL-UL transactions could corrupt FIFO pointers; invalid configurations from register interface could stall FSM; passthrough_i signals could override critical controls without authentication.",
+  "potential_cwe_identification": [
+    {
+      "cwe_id": "CWE-1231",
+      "cwe_name": "Improper Prevention of Lock Bit Modification",
+      "description": "The product uses a lock bit to prevent modification of a register, but the product does not prevent the lock bit from being modified.",
+      "rationale_for_inclusion": "CONTROL.SW_RST clears lock states and security configurations without authentication. An attacker could reset critical configurations mid-transaction via SW_RST."
+    },
+    {
+      "cwe_id": "CWE-119",
+      "cwe_name": "Improper Restriction of Operations within the Bounds of a Memory Buffer",
+      "description": "The product performs operations on a memory buffer, but it can read from or write to a memory location that is outside of the intended boundary of the buffer.",
+      "rationale_for_inclusion": "FIFO depth counters (tx_depth/rx_depth) lack bounds checks. AST shows tx_full_o = (tx_qd_o >= 8'(TxDepth) + 1) - potential off-by-one error could cause pointer corruption."
+    },
+    {
+      "cwe_id": "CWE-1257",
+      "cwe_name": "Improper Access Control Applied to Mirrored or Aliased Memory Regions",
+      "description": "The product applies improper access control to mirrored or aliased memory regions, potentially providing unintended access to critical data or registers.",
+      "rationale_for_inclusion": "Passthrough mode aliases SD lines to external controller without access control validation. Malicious passthrough_i signals could override critical controls."
+    },
+    {
+      "cwe_id": "CWE-1319",
+      "cwe_name": "Improper Protection against Electromagnetic Fault Injection",
+      "description": "The product is not protected against electromagnetic fault injection attacks.",
+      "rationale_for_inclusion": "Clock glitching vulnerability: FSM transitions depend on sck signals without glitch detection. AST shows sck_o directly controlled by flops without hardening."
+    }
+  ]
+}
+```
