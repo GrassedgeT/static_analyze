@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The watermark register module, used for tracking health test statistics like maximum repetition counts, contains a high-priority synchronous clear input (`clear_i`). This allows the entire history stored in the register to be erased at any time through a single control signal. If a low-privilege or compromised software component gains the ability to assert this signal, it can maliciously clear the watermark register after a health test failure has occurred but before a trusted monitor reads the value. This constitutes an evidence-tampering or log-clearing attack, effectively blinding the system to a failing or compromised entropy source.",
+      "location": "entropy_src_watermark_reg.sv:36-38",
+      "code_snippet": "\n  assign event_cntr_d = clear_i ? reg_reset :\n                        event_i ? event_cntr_change :\n                        event_cntr_q;\n",
+      "impact": "This vulnerability undermines a critical security feature: the continuous health monitoring of the physical random number generator (PTRNG). By clearing the evidence of poor entropy, an attacker can cause the system to trust a compromised entropy source. This could lead to the generation of weak or predictable cryptographic keys, compromising all cryptographic functions system-wide, such as secure boot, signed updates, and encrypted communications.",
+      "trigger_condition": "An attacker with write access to a configuration register bit that is connected to the `clear_i` input of a watermark register. The attacker would wait for a burst of poor-quality entropy to be generated, which would be recorded in the watermark register, and then immediately write to the control register to clear the watermark before it can be observed by trusted software.",
+      "recommendations": "The ability to clear health-test watermark registers should be a highly privileged operation. The control bits that drive the `clear_i` signals should be placed in registers that are write-locked by secure boot software early in the boot process. For more robust security, consider adding a parallel set of 'latching' watermark registers that can only be cleared by a full hardware reset (`rst_ni`), ensuring that a record of the worst-case behavior during a power cycle is always preserved."
+    }
+  ]
+}
+```

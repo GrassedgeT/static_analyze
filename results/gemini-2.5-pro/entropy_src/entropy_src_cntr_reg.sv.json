@@ -1,0 +1,22 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The event counter is designed to saturate at its maximum value. Once saturated, it no longer increments upon new events. An attacker could exploit this by generating a large number of low-impact, non-fatal events to fill the counter. Once saturated, the counter is 'blind' to any subsequent, potentially more critical, events. This leads to a loss of security telemetry, as monitoring software cannot determine the true number or rate of failures, preventing an accurate assessment of an ongoing attack's severity.",
+      "location": "entropy_src_cntr_reg.sv:33",
+      "code_snippet": "        .incr_en_i(event_i && (~counter_value != '0)),",
+      "impact": "Loss of security telemetry fidelity. The system cannot distinguish between the maximum countable number of events and a significantly larger number of events. This can mask the severity and duration of an attack, potentially leading to an inadequate or delayed response from security monitors.",
+      "trigger_condition": "An attacker or a persistent fault condition generates more security events (asserts `event_i`) than the maximum value the counter can hold (e.g., more than 65,535 for a 16-bit counter).",
+      "recommendations": "To preserve critical information, add a separate 'sticky' overflow bit. This single bit should be set to '1' the first time an event (`event_i`) arrives while the counter is already at its maximum value. This overflow bit should only be resettable via the `clear_i` signal. This allows software to distinguish between a counter that is full and a counter that has overflowed, maintaining crucial security information."
+    },
+    {
+      "description": "The module includes a `clear_i` input that allows the counter to be reset to zero. This input is intended to be driven by a software-writable register. An attacker who gains write access to the corresponding control register can clear the counter at will. This allows the attacker to erase evidence of security events they have triggered, such as health test failures. For example, an attacker could inject a fault, observe a transient malfunction, and then clear the failure counter to hide their tracks before a security monitor can detect the event.",
+      "location": "entropy_src_cntr_reg.sv:15, 30",
+      "code_snippet": "  input logic                   clear_i,\n  ...\n  prim_count #(\n    ...\n  ) u_prim_count_cntr_reg (\n    ...\n    .clr_i(clear_i),\n    ...",
+      "impact": "Enables an attacker to cover their tracks by erasing evidence of security-critical events. This undermines security monitoring and auditing, potentially allowing an attacker to probe the system's weaknesses without detection or to bypass security policies based on accumulated failure counts.",
+      "trigger_condition": "An attacker gains software execution privileges that allow writing to the top-level register responsible for asserting the `clear_i` signal for an instance of this counter.",
+      "recommendations": "The ability to clear security-critical counters should be a privileged operation. Access to the register bit that controls `clear_i` must be strictly controlled, for example, by a hardware lockable register that is written once at boot. Alternatively, the logic could be designed to only allow clearing the counter when the main `entropy_src` module is disabled, preventing an attacker from clearing failure counts during active operation."
+    }
+  ]
+}
+```

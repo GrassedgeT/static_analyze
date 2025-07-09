@@ -1,0 +1,92 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The `transition_token_i` signal, which carries the secret token for hashing, is passed across clock domains (from `clk_i` to `clk_kmac_i`) without proper synchronization. It is directly assigned to `kmac_transition_token`, which is then read by a state machine in the destination clock domain over two cycles. This creates a critical Clock Domain Crossing (CDC) violation.",
+      "location": "lc_ctrl_kmac_if.sv:44, 171, 182",
+      "code_snippet": "
+// In clk_i domain
+input lc_token_t              transition_token_i;
+
+// ...
+
+// Direct assignment across clock domains without synchronization
+lc_token_t kmac_transition_token;
+assign kmac_transition_token = transition_token_i;
+
+// ...
+
+// Used in the FSM running on clk_kmac_i
+always_comb begin : p_kmac
+  // ...
+  unique case (state_q)
+    FirstSt: begin
+      if (kmac_req) begin
+        // ...
+        kmac_data_o.data  = kmac_transition_token[0 +: 64]; // First half read
+        if (kmac_data_i.ready) begin
+          state_d = SecondSt;
+        end
+      end
+    end
+    SecondSt: begin
+      // ...
+      kmac_data_o.data  = kmac_transition_token[64 +: 64]; // Second half read
+      // ...
+    end
+    // ...
+  endcase
+end
+      ",
+      "impact": "If `transition_token_i` changes while the KMAC FSM is reading it (between the FirstSt and SecondSt states), the FSM could sample a mix of old and new data. This would cause the KMAC to hash a corrupted or unintended token. An attacker could exploit this timing vulnerability to manipulate the token being hashed, potentially bypassing the token authentication for a privileged life cycle state transition or causing a denial of service.",
+      "trigger_condition": "A software bug or a fault injection attack (e.g., glitching the system bus) could cause the `transition_token_i` value to change after `token_hash_req_i` is asserted but before the `SecondSt` of the KMAC FSM has completed. The design's reliance on a non-synthesizable assertion (`DataStable_A`) for stability is insufficient protection.",
+      "recommendations": "The `transition_token_i` signal must be properly synchronized before being used in the `clk_kmac_i` domain. The token value should be registered in the destination clock domain, with the register enable controlled by the synchronized request signal (`kmac_req`). This ensures the token value used for hashing is stable throughout the FSM's operation."
+    },
+    {
+      "description": "The serialization FSM that manages the interaction with the KMAC peripheral lacks a timeout mechanism. If the downstream KMAC block becomes unresponsive and fails to assert `kmac_data_i.ready` or `kmac_data_i.done`, the FSM will stall indefinitely.",
+      "location": "lc_ctrl_kmac_if.sv:164-201",
+      "code_snippet": "
+unique case (state_q)
+  FirstSt: begin
+    if (kmac_req) begin
+      kmac_data_o.valid = 1'b1;
+      // ...
+      if (kmac_data_i.ready) begin // FSM will stall here if ready is never asserted
+        state_d = SecondSt;
+      end
+    end
+  end
+  // ...
+  WaitSt: begin
+    if (kmac_data_i.done) begin // FSM will stall here if done is never asserted
+      kmac_ack = 1'b1;
+      state_d = DoneSt;
+    end
+  end
+  // ...
+endcase
+      ",
+      "impact": "A stalled FSM in this module leads to a permanent Denial of Service (DoS) for the life cycle controller. The module will never return the `token_hash_ack_o` signal, causing the main life cycle FSM to hang while waiting for the token hash. This would prevent any further token-based life cycle transitions until the next chip reset.",
+      "trigger_condition": "An attacker could trigger this by causing a fault in the KMAC peripheral (e.g., via power glitching, clock manipulation, or exploiting a bug in KMAC itself) that causes it to stop asserting `ready` or `done`. A non-malicious hardware failure in the KMAC block could also trigger this condition.",
+      "recommendations": "Implement a timeout counter within the `clk_kmac_i` domain. If the FSM remains in a transient state (FirstSt, SecondSt, or WaitSt) for an excessive number of clock cycles, the counter should trigger a transition to an error state. This error state should assert `token_hash_err_o` and `token_hash_ack_o` to unblock the main FSM, allowing it to handle the error gracefully instead of hanging."
+    },
+    {
+      "description": "The FSM is designed to be a 'one-shot' mechanism that enters a terminal state (`DoneSt`) after one hash operation. However, its state is reset by `rst_kmac_ni`, which is specific to the KMAC clock domain. This allows the FSM to be reset independently of the main life cycle controller, violating the security assumption that only one hash can be performed per life cycle transition attempt.",
+      "location": "lc_ctrl_kmac_if.sv:196, 203",
+      "code_snippet": "
+// ...
+      // Terminal state (by design we can only perform
+      // one token hashing operation per reset cycle).
+      DoneSt: ;
+// ...
+endcase // state_q
+
+`PRIM_FLOP_SPARSE_FSM(u_state_regs, state_d, state_q, state_e, FirstSt, clk_kmac_i, rst_kmac_ni)
+      ",
+      "impact": "If an attacker can trigger a reset on the KMAC clock domain (`rst_kmac_ni`) without resetting the main life cycle controller (`rst_ni`), they can reset the FSM back to its initial state. This would allow them to initiate multiple token hashing operations within a single life cycle transition attempt, which could be used for brute-force, timing, or other side-channel attacks on the token verification process.",
+      "trigger_condition": "A fault injection attack, such as voltage or clock glitching, that specifically targets the `rst_kmac_ni` reset line, causing it to pulse low while the main controller's reset `rst_ni` remains high.",
+      "recommendations": "To create a robust one-shot mechanism, the FSM should latch itself into the terminal `DoneSt` state using logic that can only be reset by the main controller's reset, `rst_ni`. Alternatively, a flag should be set in the main controller's clock domain (`clk_i`) upon the first hash request, which would prevent any subsequent requests from being passed to this module until a full `rst_ni` reset occurs."
+    }
+  ]
+}
+```

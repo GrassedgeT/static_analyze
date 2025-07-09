@@ -1,0 +1,53 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The write logic for the Machine Trap Vector (`mtvec`) CSR hardcodes the `MODE` field (bits [1:0]) to `2'b01`, forcing vectored exception handling. It silently ignores the value written by software to these bits. Software configured for direct exception handling (`MODE=00`) will have its configuration ignored, causing the processor to jump to an incorrect handler address upon an exception. This can lead to a denial of service or control flow hijacking.",
+      "location": "ibex_cs_registers.sv:580-581",
+      "code_snippet": "
+    mtvec_d      = csr_mtvec_init_i ? {boot_addr_i[31:8], 6'b0, 2'b01} :
+                                      {csr_wdata_int[31:8], 6'b0, 2'b01};
+      ",
+      "impact": "Denial of Service or Control Flow Hijacking. If software is configured for direct exception handling, forcing vectored mode will cause the processor to execute code at an unintended address. This will likely lead to a crash or, if the memory layout contains suitable code gadgets, execution of arbitrary code.",
+      "trigger_condition": "Software running in M-mode writes to the `mtvec` CSR with the intention of setting the `MODE` field to `2'b00` (Direct mode). When an exception or interrupt subsequently occurs, the core will use vectored mode, contrary to the software's configuration.",
+      "recommendations": "The `mtvec` write logic should respect the `MODE` bits written by software if the hardware supports them. If only vectored mode is supported, the write to the `MODE` bits should be ignored as per the WARL (Write-Any-Read-Legal) principle, but the read-back value must reflect the actual hardware configuration (i.e., always read `01`). A more robust solution is to implement both Direct and Vectored modes as specified in the RISC-V standard to ensure software compatibility and predictable behavior."
+    },
+    {
+      "description": "The double-fault detection mechanism fails to register a synchronous exception if that exception leads to a debug mode entry. The logic that sets the `sync_exc_seen` flag is conditional on `!debug_mode_i`. This creates a loophole where a sequence of two synchronous exceptions, with a debug entry in between, will not be detected as a double fault. This can lead to a triple fault and an unrecoverable system lockup instead of a controlled security alert.",
+      "location": "ibex_cs_registers.sv:738-766",
+      "code_snippet": "
+        // ... inside exception saving logic ...
+        end else if (!debug_mode_i) begin
+          // Exceptions do not update CSRs in debug mode, so ony write these CSRs if we're not in
+          // debug mode.
+          // ...
+          if (!(mcause_d.irq_ext || mcause_d.irq_int)) begin
+            // SEC_CM: EXCEPTION.CTRL_FLOW.LOCAL_ESC
+            // SEC_CM: EXCEPTION.CTRL_FLOW.GLOBAL_ESC
+            cpuctrlsts_part_we = 1'b1;
+
+            cpuctrlsts_part_d.sync_exc_seen = 1'b1;
+            if (cpuctrlsts_part_q.sync_exc_seen) begin
+              double_fault_seen_o                 = 1'b1;
+              cpuctrlsts_part_d.double_fault_seen = 1'b1;
+            end
+          end
+        end
+      ",
+      "impact": "Denial of Service. An attacker could craft a sequence of faulting operations to bypass the double-fault detection and cause a triple fault. This would lead to an unrecoverable processor state or system reset, which is a more severe outcome than the intended security alert.",
+      "trigger_condition": "An attacker or malicious software triggers a synchronous exception that causes a debug halt (e.g., an `ebreak` instruction while a debugger is attached), resumes execution, and immediately triggers a second synchronous exception. The `sync_exc_seen` flag is not set on the first exception, so the second one is not detected as a double fault.",
+      "recommendations": "The logic for setting the `sync_exc_seen` flag should be moved outside of the `!debug_mode_i` condition. The flag should be set upon any synchronous exception, regardless of whether that exception results in a standard trap or a debug mode entry. This ensures the double-fault countermeasure is always active."
+    },
+    {
+      "description": "The instruction cache is unconditionally forced on whenever the processor is in debug mode, overriding the software-controllable `icache_enable` bit in the `CPUCTRLSTS` CSR. This prevents a debugger from controlling the cache state, which is necessary for certain types of security analysis. More critically, it can lead to the processor executing stale instructions if instruction memory is modified by an external agent while the core is halted in debug mode.",
+      "location": "ibex_cs_registers.sv:1659",
+      "code_snippet": "
+  assign icache_enable_o = cpuctrlsts_part_q.icache_enable | debug_mode_i;
+      ",
+      "impact": "Execution of Stale/Incorrect Code and Information Leakage. Forcing the cache on can cause the CPU to execute old instructions from the cache after memory has been updated, violating code integrity. This also creates a timing side-channel that a malicious debugger could potentially exploit to infer information about code execution.",
+      "trigger_condition": "An external debugger places the core in debug mode, which forces the i-cache on. While the core is halted, another bus master (e.g., DMA) modifies instruction memory. When the core resumes execution, it fetches stale instructions from the i-cache instead of the updated instructions from main memory.",
+      "recommendations": "Remove the `| debug_mode_i` term from the assignment. The `icache_enable_o` signal should be controlled solely by the `cpuctrlsts_part_q.icache_enable` bit. This gives a debugger full and explicit control over the cache state via the `CPUCTRLSTS` CSR, which is essential for both security analysis and preventing stale data execution."
+    }
+  ]
+}
+```

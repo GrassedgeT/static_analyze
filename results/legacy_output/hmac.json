@@ -1,0 +1,73 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "Multiple flaws in the register read multiplexer logic allow an attacker with read access to the peripheral to exfiltrate the secret key. The KEY registers, intended to be write-only, will return key material when specific or unmapped addresses are read. Specifically: 1) Reading the `WIPE_SECRET` register returns `KEY_0`. 2) Reading any unmapped register address returns `KEY_2` due to an insecure default case.",
+      "location": "hmac_top_reg.sv:2359-2620",
+      "code_snippet": "
+// Read multiplexer logic
+always_comb begin
+  reg_rdata_next = '0;
+  unique case (1'b1)
+    // ... other cases ...
+    addr_hit[8]: begin // Corresponds to WIPE_SECRET_OFFSET
+      reg_rdata_next[31:0] = reg2hw.key[0].q;
+    end
+
+    // ... other cases for addr_hit[9] through addr_hit[40] ...
+    // ... most are correctly hardcoded to 0, but the default is not ...
+
+    default: begin
+      reg_rdata_next = reg2hw.key[2].q;
+    end
+  endcase
+end
+      ",
+      "impact": "Complete compromise of the HMAC secret key. An attacker can read out key shares without any special privileges beyond access to the HMAC memory-mapped registers. This completely breaks the integrity and authentication guarantees provided by the HMAC module. This corresponds to CWE-200: Exposure of Sensitive Information to an Unauthorized Actor.",
+      "trigger_condition": "A standard software read operation to the `WIPE_SECRET` register address (0x20) or any unmapped address within the HMAC register space.",
+      "recommendations": "The read multiplexer logic must be corrected immediately. All reads from addresses corresponding to write-only registers (including all KEY registers and WIPE_SECRET) must return a constant, non-sensitive value (e.g., 32'h0). The `default` case of the multiplexer must also be changed to return a constant value and should ideally flag an address error."
+    },
+    {
+      "description": "The key wiping mechanism is gated by an error condition. The write enable for the `WIPE_SECRET` register (`wipe_secret_we`) is only asserted if a bus transaction error (`reg_error`) occurs simultaneously. This prevents legitimate software from reliably clearing the secret key under normal operating conditions.",
+      "location": "hmac_top_reg.sv:2122",
+      "code_snippet": "
+assign wipe_secret_we = addr_hit[8] & reg_we & reg_error;
+
+// Where reg_error is defined at line 168:
+// assign reg_error = addrmiss | wr_err | intg_err;
+      ",
+      "impact": "Denial of Service for the key wiping functionality. A user attempting to clear the key will find the operation has no effect unless they can also trigger a bus error. This prevents secure cleanup of sensitive material, leaving the key vulnerable to later extraction by other means (e.g., fault injection, side-channel attacks, or software vulnerabilities). This corresponds to CWE-693: Protection Mechanism Failure.",
+      "trigger_condition": "A standard, valid software write to the `WIPE_SECRET` register address. Because the write is valid, `reg_error` is false, and the `wipe_secret_we` signal is never asserted, so the wipe command is ignored.",
+      "recommendations": "The logic for the `wipe_secret_we` signal should be inverted to trigger on a valid write, not an erroneous one. The line should be changed to: `assign wipe_secret_we = addr_hit[8] & reg_we & !reg_error;`."
+    },
+    {
+      "description": "The `intr_state` register's `fifo_empty` bit is implemented as a read-only bit, but it can trigger an interrupt. The write-enable for its underlying sub-register is hardcoded to zero, making it impossible for software to clear this interrupt state bit. This violates the typical Write-1-to-Clear (W1C) behavior expected for interrupt status registers.",
+      "location": "hmac_top_reg.sv:388-412",
+      "code_snippet": "
+prim_subreg #(
+  .DW      (1),
+  .SwAccess(prim_subreg_pkg::SwAccessRO), // Defined as Read-Only
+  .RESVAL  (1'h0)
+) u_intr_state_fifo_empty (
+  .clk_i   (clk_i),
+  .rst_ni  (rst_ni),
+
+  // from register interface
+  .we     (1'b0), // Write enable is hardcoded to false
+  .wd     ('0),
+  
+  // from internal hardware
+  .de     (hw2reg.intr_state.fifo_empty.de),
+  .d      (hw2reg.intr_state.fifo_empty.d),
+  
+  // ...
+  .qs     (intr_state_fifo_empty_qs)
+);
+      ",
+      "impact": "Denial of Service. Once the `fifo_empty` interrupt is triggered and enabled, it cannot be cleared by software. This will cause a persistent interrupt 'storm', forcing the processor to repeatedly execute the interrupt service routine, effectively halting system progress or causing a watchdog reset. This corresponds to CWE-400: Uncontrolled Resource Consumption.",
+      "trigger_condition": "The HMAC message FIFO becomes empty during an operation where the `fifo_empty` interrupt is enabled in the `INTR_ENABLE` register. Once set, the condition becomes permanent.",
+      "recommendations": "The `fifo_empty` interrupt status bit should be made clearable by software. Its access type (`SwAccess`) should be changed from `SwAccessRO` to `SwAccessW1C`. The `we` port of the sub-register should be connected to `intr_state_we`, and the `wd` port should be connected to `reg_wdata[1]` to allow software to clear the bit by writing a '1' to it."
+    }
+  ]
+}
+```

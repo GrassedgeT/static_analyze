@@ -1,0 +1,53 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The Finite State Machine (FSM) can enter a permanent lockup state. In the `LP_SLP` (Low-Power Sleep) state, when the `wakeup_timer_cnt_q` reaches the configured `cfg_wakeup_time_i`, the timer is cleared, but there is no state transition defined. The FSM will remain in `LP_SLP` indefinitely, ceasing all further operations.",
+      "location": "adc_ctrl_fsm.sv:298-306",
+      "code_snippet": "
+      LP_SLP: begin
+        adc_pd_o = 1'b1;
+        if (wakeup_timer_cnt_q  != cfg_wakeup_time_i) begin
+          wakeup_timer_cnt_en = 1'b1;
+        end
+        else if (wakeup_timer_cnt_q == cfg_wakeup_time_i) begin
+          wakeup_timer_cnt_clr = 1'b1;
+        end
+      end
+      ",
+      "impact": "Denial of Service (DoS). The ADC controller becomes permanently unresponsive after the first low-power sleep cycle. This disables any security monitoring or functionality that relies on the ADC, such as voltage monitoring or intrusion detection.",
+      "trigger_condition": "This vulnerability is triggered by enabling low-power mode (`cfg_lp_mode_i = 1`). The FSM will operate for one sample cycle, enter the `LP_SLP` state, and hang once the configured wakeup time expires. No malicious action is required; it is a flaw in the core logic.",
+      "recommendations": "Modify the `LP_SLP` state logic to transition to the `LP_PWRUP` state upon the expiration of the wakeup timer. This ensures the FSM can resume its sampling cycle. The line `fsm_state_d = LP_PWRUP;` should be added inside the `else if (wakeup_timer_cnt_q == cfg_wakeup_time_i)` block."
+    },
+    {
+      "description": "The calculation for sample counter thresholds (`lp_sample_cnt_thresh` and `np_sample_cnt_thresh`) is vulnerable to an integer underflow. The thresholds are computed by subtracting 1 from a software-configurable value. If software configures the sample count to 0, the result underflows to the maximum possible value for the counter's width, making the threshold effectively unreachable.",
+      "location": "adc_ctrl_fsm.sv:186-187",
+      "code_snippet": "
+  assign lp_sample_cnt_thresh = cfg_lp_sample_cnt_i - 1'b1;
+  assign np_sample_cnt_thresh = cfg_np_sample_cnt_i - 1'b1;
+      ",
+      "impact": "Security Bypass. An unreachable threshold prevents the filter match debouncing mechanism from ever completing. The controller will fail to generate `match_pending` interrupts for sustained events, allowing an attacker to bypass any security checks that rely on this filter-match mechanism.",
+      "trigger_condition": "An attacker with register write access programs the `lp_sample_cnt` or `np_sample_cnt` fields in the corresponding control registers to a value of 0. While formal `ASSUME` properties exist, they are not synthesized into hardware, leaving the design vulnerable at runtime.",
+      "recommendations": "Add hardware logic to safely handle the zero-value case for the sample count configurations. The threshold should be set to 0 if the configured count is 0. For example: `assign np_sample_cnt_thresh = (cfg_np_sample_cnt_i == '0) ? '0 : cfg_np_sample_cnt_i - 1'b1;`. This ensures predictable behavior and prevents the underflow condition."
+    },
+    {
+      "description": "The FSM logic allows the ADC power-up delay to be completely bypassed if `cfg_pwrup_time_i` is configured to zero. The logic immediately transitions out of the `PWRUP` state, which can lead to sampling from the ADC before its output has stabilized.",
+      "location": "adc_ctrl_fsm.sv:216-220",
+      "code_snippet": "
+      PWRUP: begin
+        if (pwrup_timer_cnt_q != cfg_pwrup_time_i) begin
+          pwrup_timer_cnt_en = 1'b1;
+        end
+        else if (pwrup_timer_cnt_q == cfg_pwrup_time_i) begin
+          pwrup_timer_cnt_clr = 1'b1;
+          // ... transitions to next state ...
+        end
+      end
+      ",
+      "impact": "Data Integrity Failure and Unreliable Operation. Sampling unstable analog values can produce garbage data. This can cause the filter logic to miss valid security events (e.g., a voltage glitch attack) or generate false alarms, undermining the reliability of the ADC as a security sensor.",
+      "trigger_condition": "An attacker with register write access programs the power-up time field in the `ADC_PD_CTL` register to zero. Since the power-up timer starts at zero, the condition `pwrup_timer_cnt_q == cfg_pwrup_time_i` is met immediately, skipping the intended delay.",
+      "recommendations": "Ensure a minimum power-up delay is always enforced, even if the configured value is zero. The comparison logic should be changed from `!=` to `<`. For example, `if (pwrup_timer_cnt_q < cfg_pwrup_time_i)`. This ensures at least one cycle of delay if `cfg_pwrup_time_i` is 1 and correctly handles the case where `cfg_pwrup_time_i` is 0 by providing no delay, which should be documented as requiring a ready ADC. A more robust fix is to enforce a hardware-defined minimum delay if the configured value is below a safe threshold."
+    }
+  ]
+}
+```

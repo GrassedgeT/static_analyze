@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The module contains a 'stub' mode, enabled by the `Stub` synthesis parameter, which replaces the true entropy source with a predictable Linear Feedback Shift Register (LFSR) for testing purposes. This stub mode incorrectly hardcodes the `es_fips` output signal to '1', falsely advertising to downstream hardware modules (like CSRNG) that its predictable, non-random output is FIPS-compliant.",
+      "location": "entropy_src.sv:176-180",
+      "code_snippet": "\n  assign stub_entropy_hw_if = '{\n    es_ack:  '1,\n    es_bits:  {Copies{stub_lfsr_value}},\n    es_fips: '1\n  };\n",
+      "impact": "If the `Stub` parameter is ever mistakenly enabled in a production build, the entire system's cryptographic security is catastrophically compromised. All 'random' numbers will be derived from a predictable pseudo-random sequence, while the system operates under the false assumption that it is using high-quality, FIPS-compliant entropy. This would lead to predictable encryption keys, nonces, and other critical security values, allowing for a total system break.",
+      "trigger_condition": "This is a build-time vulnerability. It would be triggered by a misconfigured build process that incorrectly sets the `Stub` parameter to `1'b1` for a production hardware image. An attacker cannot trigger this post-deployment, but the existence of this 'backdoor' represents a significant supply chain or configuration management risk.",
+      "recommendations": "The `es_fips` signal within the stub logic must be hardcoded to `1'b0` to accurately reflect its non-compliant nature. Furthermore, a synthesis-time assertion or a linter rule should be implemented to error out and halt any build that attempts to compile this module for production targets with `Stub = 1'b1`."
+    },
+    {
+      "description": "The alert generation logic for bus integrity errors has a potential masking issue. The `intg_err_alert` signal is a vector intended to carry alert requests to both the recoverable (index 0) and fatal (index 1) alert senders. However, the code contains a hardcoded assignment that permanently ties the recoverable alert input `intg_err_alert[0]` to zero.",
+      "location": "entropy_src.sv:118",
+      "code_snippet": "\n  logic [NumAlerts-1:0] intg_err_alert;\n  assign intg_err_alert[0] = 1'b0;\n",
+      "impact": "This hardcoding completely masks any condition that was intended to trigger a recoverable alert due to a bus integrity error. While a fatal alert is still triggered (wired to index 1), this could allow an attacker performing fault injection or glitching on the bus to go undetected if the attack only causes a condition that would merit a recoverable alert. It defeats a potential layer of security monitoring.",
+      "trigger_condition": "A fault injection attack, a bus glitch, or a malfunctioning bus master that causes a TL-UL integrity error condition. Due to this flaw, the event will fail to generate a recoverable alert, potentially allowing an attack to proceed without the system escalating to a 'warn' state.",
+      "recommendations": "Remove the hardcoded assignment `assign intg_err_alert[0] = 1'b0;`. The `entropy_src_reg_top` module should provide distinct outputs for recoverable and fatal integrity errors. These outputs should be wired directly to `intg_err_alert[0]` and `intg_err_alert[1]` respectively. If the register block is not designed to produce a recoverable integrity alert, the input to the alert sender should be explicitly tied to zero at the point of instantiation to make the design intent clear, rather than being masked by a loose assignment."
+    },
+    {
+      "description": "In stub mode, the hardware provides contradictory debug status to software. The `debug_status.main_sm_idle.d` register field is hardcoded to `1'b1`, indicating the main state machine is idle. Simultaneously, the `debug_status.main_sm_state.d` field is hardcoded to a non-idle value (`8'b01110110`), creating an inconsistent state report.",
+      "location": "entropy_src.sv:211-213",
+      "code_snippet": "\n      stub_hw2reg.debug_status.main_sm_idle.d = 1'b1;\n      // need to move this to package so that it can be referenced\n      stub_hw2reg.debug_status.main_sm_state.d = 8'b01110110;\n",
+      "impact": "This is not a direct exploitable vulnerability but a significant security weakness in terms of diagnostics and observability. In the event that the insecure stub mode is accidentally activated in a production device, this contradictory status reporting would confuse and mislead any diagnostic software or human operator. This could delay or prevent the discovery of the critical configuration error, allowing the system to continue operating in a non-secure state.",
+      "trigger_condition": "This condition is active whenever the `Stub` parameter is set to `1'b1` during synthesis.",
+      "recommendations": "The stub's status reporting logic should be made consistent. If the stub is intended to be in an 'idle-like' state, then the `main_sm_state` register should report the encoding for the Idle state. The stub logic should accurately report its simplified state to avoid causing confusion during debug or security audits."
+    }
+  ]
+}
+```

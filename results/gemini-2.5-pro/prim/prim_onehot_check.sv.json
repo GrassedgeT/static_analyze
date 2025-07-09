@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The address check logic (`addr_err`) incorrectly indicates no error for a multi-hot input vector as long as one of the asserted bits corresponds to the expected address (`addr_i`). The logic `or_tree[0] ^ and_tree[0]` simplifies to `(|oh_i) ^ oh_i[addr_i]`. If `oh_i` is multi-hot (e.g., 'b110) and `addr_i` points to one of the '1's, `|oh_i` is 1 and `oh_i[addr_i]` is 1, resulting in `addr_err` being 0. While the separate `oh0_err` check would still fire, this specific check fails. This violates the principle of layered security, as a fault injection attack that disables `oh0_err` would allow a multi-hot vector to pass the address check.",
+      "location": "prim_onehot_check.sv:132-133",
+      "code_snippet": "\n    assign addr_err = or_tree[0] ^ and_tree[0];\n    `ASSERT(AddrCheck_A, oh_i[addr_i] != (|oh_i) |-> err_o)\n",
+      "impact": "If the primary one-hot check (`oh0_err`) is bypassed via a fault injection attack, this flaw would allow an attacker to pass a multi-hot signal as valid for a specific address. This could lead to multiple hardware modules being activated simultaneously when only one is expected, causing unpredictable behavior, denial of service, or information leakage depending on what the one-hot signal controls (e.g., bus arbiter, MUX select).",
+      "trigger_condition": "An attacker provides a multi-hot input `oh_i` where one of the high bits matches the `addr_i` input, combined with a fault injection attack (e.g., voltage/clock glitch) that suppresses the `oh0_err` signal.",
+      "recommendations": "The address check logic should be made more robust and not rely on other checks for correctness. A better implementation for `addr_err` would be `assign addr_err = or_tree[0] && !and_tree[0];`. This correctly flags an error if there is any bit set (`or_tree[0]`) but it is not the one at the expected address (`!and_tree[0]`). This logic remains correct even for multi-hot inputs. The associated assertion should also be strengthened to correctly handle the multi-hot case."
+    },
+    {
+      "description": "In configurations where `EnableCheck` or `AddrCheck` are disabled, the design attempts to prevent the corresponding logic trees from being optimized away by assigning their reduction to a 'unused' signal. However, assigning the value to a local wire (`logic unused_or_tree;`) is typically insufficient to prevent a modern synthesis tool from removing the entire unused logic cone, as the wire itself has no fan-out.",
+      "location": "prim_onehot_check.sv:125-126, 135-136",
+      "code_snippet": "\n  end else begin : gen_no_enable_check\n    logic unused_or_tree;\n    assign unused_or_tree = ^or_tree;\n    assign enable_err = 1'b0;\n  end\n\n// ...\n\n  end else begin : gen_no_addr_check_strict\n    logic unused_and_tree;\n    assign unused_and_tree = ^and_tree;\n    assign addr_err = 1'b0;\n  end\n",
+      "impact": "If the `or_tree` or `and_tree` logic is optimized away, it creates significant structural and physical differences between parameterizations of the same module. This can nullify countermeasures against fault injection that rely on consistent physical characteristics (e.g., power consumption, timing). An attacker could exploit these differences, or a fault-based attack developed on one configuration might not be detected on another, reducing security assurance.",
+      "trigger_condition": "A synthesis tool processes the design with `EnableCheck=0` or `AddrCheck=0`, identifying the `or_tree` or `and_tree` logic as unobservable and removing it.",
+      "recommendations": "Use a robust, tool-agnostic method to prevent logic optimization. This typically involves using a synthesis attribute or pragma such as `/* synthesis keep */` or a tool-specific `dont_touch` constraint on the `unused_*_tree` wires. This explicitly instructs the synthesis tool to preserve the signal and its entire fan-in cone, ensuring the logic tree is always physically present."
+    },
+    {
+      "description": "The module's error output, `err_o`, is purely combinational, resulting from multi-level logic trees. This design is susceptible to generating glitches—spurious, transient pulses—on `err_o` as inputs change and propagate through different logic paths. The module documentation acknowledges its combinational nature but does not warn about this specific hazard.",
+      "location": "prim_onehot_check.sv:108",
+      "code_snippet": "\n  assign err_o = oh0_err || enable_err || addr_err;\n",
+      "impact": "If downstream logic captures the `err_o` signal using an edge-sensitive or asynchronous latch, a glitch can be misinterpreted as a valid error. This could trigger a false security alert, leading the system to perform an unnecessary defensive action like wiping key material or entering a lockdown state. An attacker who can control the timing of inputs to reliably produce such glitches could cause a repeatable Denial of Service (DoS).",
+      "trigger_condition": "An attacker provides a sequence of inputs to `oh_i` or `addr_i` that creates different path delays through the combinational logic trees, resulting in a temporary, spurious pulse on `err_o`. This glitch must then be captured by downstream logic that is not designed to tolerate it.",
+      "recommendations": "The security of a combinational checker should not depend on careful implementation by every user. The module should be made more robust by providing a parameterized option to register the `err_o` output within the module itself (e.g., `parameter bit RegisterOutput = 1`). This would filter out glitches and provide a stable output. If this is not done, the module's documentation must be explicitly updated to warn users of the glitch hazard and strongly recommend they register the `err_o` output before it is used by any sensitive logic."
+    }
+  ]
+}
+```

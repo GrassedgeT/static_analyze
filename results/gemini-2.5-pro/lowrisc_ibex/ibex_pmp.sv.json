@@ -1,0 +1,22 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The PMP module contains a critical flaw in its basic permission checking logic. When evaluating a write access, the check for the 'write' permission bit (`W`) in the corresponding `pmpcfg` register is missing. The logic incorrectly evaluates to true for any write request, regardless of the `W` bit's value, as long as the access type is `PMP_ACC_WRITE`.",
+      "location": "ibex_pmp.sv:209-212",
+      "code_snippet": "      assign region_basic_perm_check[c][r] =\n          ((pmp_req_type_i[c] == PMP_ACC_EXEC)  & csr_pmp_cfg_i[r].exec) |\n          ((pmp_req_type_i[c] == PMP_ACC_WRITE)) |\n          ((pmp_req_type_i[c] == PMP_ACC_READ)  & csr_pmp_cfg_i[r].read);",
+      "impact": "This vulnerability allows unprivileged (User-mode) code to bypass the PMP write protection for any memory region it can access. An attacker can overwrite read-only data, executable code, or critical data structures in more privileged domains (e.g., Machine-mode), leading to a complete system compromise, privilege escalation, and loss of integrity.",
+      "trigger_condition": "An attacker running in User-mode or Supervisor-mode executes a store instruction (e.g., `sw`, `sh`, `sb`) to a memory address that is covered by a PMP region. The PMP region must be configured to grant read and/or execute access to User-mode but explicitly deny write access (W=0). Due to the bug, the write will be incorrectly permitted.",
+      "recommendations": "Correct the logic on line 211 to properly check the `write` permission bit from the PMP configuration register. The line should be changed from `((pmp_req_type_i[c] == PMP_ACC_WRITE))` to `((pmp_req_type_i[c] == PMP_ACC_WRITE) & csr_pmp_cfg_i[r].write)`."
+    },
+    {
+      "description": "The PMP logic incorrectly handles memory accesses that do not match any configured PMP region. According to the RISC-V specification, accesses from less privileged modes (User/Supervisor) that do not match any PMP entry should be denied. However, the `access_fault_check` function initializes the `access_fail` signal to '0' (success) and only updates it if a PMP region matches. If no region matches, the function incorrectly returns '0', effectively allowing the access for all privilege levels, which violates the principle of default-deny.",
+      "location": "ibex_pmp.sv:133-145",
+      "code_snippet": "    logic access_fail = 1'b0;\n    logic matched = 1'b0;\n\n    // PMP entries are statically prioritized, from 0 to N-1\n    // The lowest-numbered PMP entry which matches an address determines accessibility\n    for (int r = 0; r < PMPNumRegions; r++) begin\n      if (!matched && match_all[r]) begin\n        access_fail = ~final_perm_check[r];\n        matched = 1'b1;\n      end\n    end\n    return access_fail;",
+      "impact": "This vulnerability breaks the \"default-deny\" security principle of the PMP. It allows unprivileged (User-mode) code to access any memory that is not explicitly covered by a PMP entry. An attacker could use this to read, write, or execute code in sensitive memory regions that the system designer intended to be inaccessible by default, leading to information disclosure or arbitrary code execution.",
+      "trigger_condition": "An attacker in User-mode or Supervisor-mode performs a memory access (load, store, or instruction fetch) to an address that falls outside all configured PMP regions. The PMP module will fail to generate an access fault, and the access will succeed.",
+      "recommendations": "Modify the `access_fault_check` function to correctly implement the default behavior for unmatched accesses. After the loop, if no region has matched (`matched == 1'b0`), the `access_fail` signal must be determined based on the privilege level and the `mseccfg.mmwp` bit. The logic should be updated to deny access to U/S modes by default, as described in the RISC-V specification and the code's own comments."
+    }
+  ]
+}
+```

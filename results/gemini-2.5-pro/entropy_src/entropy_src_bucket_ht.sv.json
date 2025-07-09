@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The bucket health test comparison logic uses a strict greater-than operator (`>`) to check if a bin counter has exceeded its threshold. This means if a bin counter's value is exactly equal to the threshold value, it will not be flagged as a failure. This creates an off-by-one weakness in the health check, as the threshold is typically considered the first failing value.",
+      "location": "entropy_src_bucket_ht.sv:68",
+      "code_snippet": "
+    // use the bin incrementer to increase the bin total count
+    // SEC_CM: CTR.REDUN
+    prim_count #(
+      .Width(RegWidth)
+    ) u_prim_count_bin_cntr (
+      ...
+      .cnt_o(bin_cntr[i]),
+      ...
+    );
+    assign bin_cnt_exceeds_thresh[i] = (bin_cntr[i] > thresh_i);
+  end : gen_symbol_match
+
+  ...
+
+  assign test_fail_pulse_o = active_i && window_wrap_pulse_i && (|bin_cnt_exceeds_thresh);
+",
+      "impact": "This weakness slightly reduces the effectiveness of the bucket health test. An attacker with some influence over the physical noise source (e.g., via fault injection) could potentially create a biased entropy stream that causes a bin counter to reach the exact threshold value without exceeding it. This would allow lower-quality, more predictable entropy to pass the health check and be consumed by downstream cryptographic modules, potentially weakening the entire system's cryptographic security.",
+      "trigger_condition": "An attacker would need to have partial control or influence over the raw entropy source to create a biased data stream. They would also need to know the programmed `thresh_i` value, which is software-configurable. By carefully crafting the input, they could cause a bin counter to increment to a value exactly equal to `thresh_i` at the end of a test window, thus bypassing the intended security check.",
+      "recommendations": "Change the comparison operator from strict greater-than (`>`) to greater-than-or-equal-to (`>=`). This ensures that if a bin counter reaches the maximum allowed value (the threshold), it is correctly flagged as a failure. The line should be modified to: `assign bin_cnt_exceeds_thresh[i] = (bin_cntr[i] >= thresh_i);`"
+    }
+  ]
+}
+```

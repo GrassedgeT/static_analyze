@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The comment for the `Error` state in the `entropy_src_ack_sm` state machine indicates its behavior is to 'hang' upon reaching an illegal state. While having a dedicated error state is a good security practice to prevent undefined behavior, if this 'hang' state does not also trigger a system-level alert, it creates a silent Denial of Service (DoS) vulnerability. A hardware consumer, such as the CSRNG module, would be starved of entropy, effectively halting critical cryptographic operations without the system being notified of the failure's root cause.",
+      "location": "entropy_src_ack_sm_pkg.sv:32",
+      "code_snippet": "  localparam int StateWidth = 6;\n  typedef enum logic [StateWidth-1:0] {\n    Idle  = 6'b011101, // idle\n    Wait  = 6'b101100, // wait until the fifo has an entry\n    Error = 6'b000010  // illegal state reached and hang\n  } state_e;\n",
+      "impact": "An attacker could use a fault injection attack (e.g., voltage/clock glitching) to corrupt the state register of this FSM. This would force it into an invalid state, causing a transition to the `Error` state. The resulting hang would permanently block the entropy supply to the hardware interface consumer (CSRNG), constituting a Denial of Service attack against the system's core cryptographic functions. The failure could be silent, making it difficult to diagnose.",
+      "trigger_condition": "A physical fault injection attack targets the state register of the `entropy_src_ack_sm` FSM, flipping one or more bits to create an un-encoded state value. This forces the FSM logic (in a different file) to transition to the defined `Error` state.",
+      "recommendations": "The FSM implementation that utilizes these state definitions must be updated. When the FSM transitions to the `Error` state, it should not only cease operation (hang) but also immediately assert a fatal alert signal to the system's alert handler. This ensures that such a critical failure is promptly reported, allowing the system to take appropriate action, such as resetting the system or entering a safe-state."
+    }
+  ]
+}
+```

@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The redundant check for state transition validity uses a logical OR (`||`) instead of a logical AND (`&&`). The design uses redundant state representations (`dec_lc_state_i[0]` and `dec_lc_state_i[1]`) to protect against faults. However, by checking if either `TransTokenIdxMatrix[dec_lc_state_i[0]][...]` OR `TransTokenIdxMatrix[dec_lc_state_i[1]][...]` is valid, the check can be passed with just one of the two redundant paths being valid. This completely undermines the fault tolerance provided by the redundancy.",
+      "location": "lc_ctrl_state_transition.sv:140-141",
+      "code_snippet": "        if (TransTokenIdxMatrix[dec_lc_state_i[0]][trans_target_i[0]] != InvalidTokenIdx ||\n            TransTokenIdxMatrix[dec_lc_state_i[1]][trans_target_i[1]] != InvalidTokenIdx) begin",
+      "impact": "This flaw allows an attacker to bypass the life cycle transition rules using a single fault injection attack. For example, an attacker could glitch the device to corrupt one of the redundant `dec_lc_state_i` inputs, making it appear as if the device is in a less secure state (e.g., TEST_UNLOCKED instead of PROD). The OR condition would then validate an illegal transition (e.g., to DEV state), allowing the attacker to downgrade the device's security, enable debug features, and extract secrets.",
+      "trigger_condition": "A fault injection attack, such as voltage or clock glitching, that successfully flips bits in one of the redundant copies of the current life cycle state (`dec_lc_state_i`) just before it is evaluated by the transition logic. The attacker would craft the fault to create a valid-looking transition from a fake state to a desired insecure state.",
+      "recommendations": "The logical OR (`||`) operator must be replaced with a logical AND (`&&`). A state transition should be considered valid only if the check passes for BOTH redundant copies of the state. The corrected code should be:\n\n`if (TransTokenIdxMatrix[dec_lc_state_i[0]][trans_target_i[0]] != InvalidTokenIdx && TransTokenIdxMatrix[dec_lc_state_i[1]][trans_target_i[1]] != InvalidTokenIdx) begin`\n\nThis ensures that a single fault cannot bypass the security check and that the redundancy provides its intended protection."
+    }
+  ]
+}
+```

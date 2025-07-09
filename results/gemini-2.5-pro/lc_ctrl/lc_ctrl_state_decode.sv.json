@@ -1,0 +1,42 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "In the main `always_comb` block, the decoded transition counter `dec_lc_cnt_o` is not explicitly assigned a value for several branches of the `fsm_state_i` case statement. Specifically, for the states `ResetSt`, `EscalateSt`, `PostTransSt`, `InvalidSt`, and `ScrapSt`, the logic does not assign a value to `dec_lc_cnt_o`. Consequently, this output retains its default assignment of `{DecLcCountWidth{1'b1}}` (which is `5'b11111` or 31), an out-of-range value since the maximum valid transition count is 24. Exposing an undefined or out-of-range value in a CSR can mislead software, potentially causing it to enter an incorrect state or fail its error handling routines.",
+      "location": "lc_ctrl_state_decode.sv:53-65",
+      "code_snippet": "
+        always_comb begin : p_lc_state_decode
+          // Decoded state defaults
+          dec_lc_state        = {DecLcStateNumRep{DecLcStInvalid}};
+          dec_lc_cnt_o          = {DecLcCountWidth{1'b1}};
+          dec_lc_id_state_o     = DecLcIdInvalid;
+          state_invalid_error_o = '0;
+
+          unique case (fsm_state_i)
+            // Don't decode anything in ResetSt
+            ResetSt: ;
+            // These are temporary, terminal states that are not encoded
+            // in the persistent LC state vector from OTP, hence we decode them first.
+            EscalateSt:  dec_lc_state = {DecLcStateNumRep{DecLcStEscalate}};
+            PostTransSt: dec_lc_state = {DecLcStateNumRep{DecLcStPostTrans}};
+            InvalidSt:   dec_lc_state = {DecLcStateNumRep{DecLcStInvalid}};
+            ScrapSt:     dec_lc_state = {DecLcStateNumRep{DecLcStScrap}};
+            // Otherwise check and decode the life cycle state continously.
+            default: begin
+              // ...
+              unique case (lc_cnt_i)
+                LcCnt0:   dec_lc_cnt_o = 5'd0;
+                // ... other assignments ...
+              endcase
+              // ...
+            end
+          endcase // lc_id_state_i
+        end
+      ",
+      "impact": "This logic flaw causes the hardware to expose an invalid and out-of-range transition count (31) to software when the life cycle controller is in certain terminal or error states. Software reading the corresponding CSR might not be designed to handle this unexpected value, which could lead to incorrect behavior, faulty error recovery, or potential crashes depending on how the software uses the counter value.",
+      "trigger_condition": "This vulnerability is triggered whenever the main life cycle FSM enters one of the states where `dec_lc_cnt_o` is not explicitly assigned: `ResetSt`, `EscalateSt`, `PostTransSt`, `InvalidSt`, or `ScrapSt`. This can occur during a normal reset, a valid transition to the `Scrap` state, or as a result of a fault injection attack that forces the FSM into `EscalateSt` or `InvalidSt`.",
+      "recommendations": "Explicitly assign a deterministic and sensible value to `dec_lc_cnt_o` within every branch of the `fsm_state_i` case statement. For terminal, transient, or error states where a transition count is not meaningful, it is recommended to assign a known value such as `5'b0`. This ensures that the hardware always presents a predictable and valid state to the software layer."
+    }
+  ]
+}
+```

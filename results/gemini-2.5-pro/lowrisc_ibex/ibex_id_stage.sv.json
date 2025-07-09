@@ -1,0 +1,34 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The logic responsible for flushing the pipeline after a write to a security-critical Control and Status Register (CSR) is incomplete. It fails to trigger a flush when Physical Memory Protection (PMP) address registers `pmpaddr16` through `pmpaddr63` are modified. The check only covers CSR addresses where the top 7 bits are `7'h1D`, which corresponds to the range `0x3A0-0x3BF`, missing the subsequent PMP address registers.",
+      "location": "ibex_id_stage.sv:525-532",
+      "code_snippet": "
+/*Line525*/:     if (csr_op_en_o == 1'b1 && (csr_op_o == CSR_OP_WRITE || csr_op_o == CSR_OP_SET)) begin
+/*Line526*/:       if (csr_num_e'(instr_rdata_i[31:20]) == CSR_MSTATUS ||
+/*Line527*/:           csr_num_e'(instr_rdata_i[31:20]) == CSR_MIE     ||
+/*Line528*/:           csr_num_e'(instr_rdata_i[31:20]) == CSR_MSECCFG ||
+/*Line529*/:           // To catch all PMPCFG/PMPADDR registers, get the shared top most 7 bits.
+/*Line530*/:           instr_rdata_i[31:25] == 7'h1D) begin
+/*Line531*/:         csr_pipe_flush = 1'b1;
+/*Line532*/:       end
+",
+      "impact": "This creates a Time-of-Check-to-Time-of-Use (TOCTOU) vulnerability, violating CWE-1231 (Improper Prevention of Lock Bit Modification). An attacker can execute an instruction that modifies a PMP address register (e.g., `pmpaddr16`) to change a memory region's boundaries. Because the pipeline is not flushed, an instruction already in the pipeline that was fetched when the old PMP configuration was active will be allowed to execute. This can lead to a complete bypass of the PMP, allowing unauthorized memory access or execution from a memory region that should be protected.",
+      "trigger_condition": "A software sequence writes to a PMP address register in the range `pmpaddr16` (`0x3C0`) to `pmpaddr63` (`0x3EF`), immediately followed by an instruction that attempts to access or execute from a location that is only permissible under the old PMP configuration. The second instruction must already be in the prefetch buffer or instruction fetch stage.",
+      "recommendations": "The check for PMP register writes must be expanded to cover the entire PMP address space (`0x3A0-0x3EF`). Instead of a partial, hardcoded address check, the logic should check for the full range of PMP CSRs. A more robust implementation would be to check the upper bits of the CSR address to cover the full range. For example, a range check like `(csr_addr >= CSR_PMPCFG0) && (csr_addr <= CSR_PMPADDR63)` should be used, where `csr_addr` is `instr_rdata_i[31:20]`."
+    },
+    {
+      "description": "The signal `illegal_umode_insn`, intended to flag instructions that are illegal when executed in User Mode, is permanently disabled by being hardcoded to a constant value of zero. This removes a layer of defense-in-depth for privilege enforcement.",
+      "location": "ibex_id_stage.sv:550",
+      "code_snippet": "
+/*Line549*/:   // Some instructions can only be executed in M-Mode
+/*Line550*/:   assign illegal_umode_insn = 1'b0;
+",
+      "impact": "This hardcoded signal creates a latent vulnerability. While the primary privilege checks for known instructions (like `MRET` and CSR accesses) appear to be handled in other modules, this design choice eliminates a redundant security check. If a new privileged instruction were added to the instruction set or decoder in the future, and the designer forgets to add a specific privilege check in the controller, this disabled signal ensures the violation will not be caught here. This could allow a user-mode application to execute a privileged instruction, leading to privilege escalation.",
+      "trigger_condition": "This is a latent defect that would be triggered by a future modification. An engineer could add a new privileged instruction to the `ibex_decoder` but fail to add a corresponding check in the `ibex_controller` that validates its use against the current privilege mode (`priv_mode_i`). An attacker could then execute this new instruction from user mode.",
+      "recommendations": "The `illegal_umode_insn` signal should be driven by active logic instead of being hardcoded. It should be asserted if the core is in User Mode (`priv_mode_i == PRIV_LVL_U`) and an instruction that requires Machine Mode (e.g., `MRET`, `WFI` if `mstatus.TW=1`) is decoded. This provides a clear, explicit, and robust check for instruction privilege violations within the decode stage itself, improving the design's security posture through defense-in-depth."
+    }
+  ]
+}
+```

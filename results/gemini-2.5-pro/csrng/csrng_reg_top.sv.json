@@ -1,0 +1,77 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The primary register write-enable lock, `REGWEN`, fails to protect several critical configuration and command registers. Registers such as `CMD_REQ` (command request), `RESEED_INTERVAL`, `INTR_ENABLE`, and `INT_STATE_NUM` can be written to even after `REGWEN` is cleared to '0'. This violates the intended hardware security policy of locking the module's configuration after initial setup.",
+      "location": "csrng_reg_top.sv:2279-2296",
+      "code_snippet": "
+        // Definition of the REGWEN lock's status signal
+        .qs     (regwen_qs)
+
+        // Example of a correctly protected register write enable
+        assign ctrl_gated_we = ctrl_we & regwen_qs;
+
+        // --- Examples of UNPROTECTED critical register write enables ---
+
+        // The command request register is not protected by regwen_qs
+        assign cmd_req_we = addr_hit[6] & reg_we & !reg_error;
+
+        // The reseed interval register is not protected by regwen_qs
+        assign reseed_interval_we = addr_hit[7] & reg_we & !reg_error;
+
+        // The interrupt enable register is not protected by regwen_qs
+        assign intr_enable_we = addr_hit[1] & reg_we & !reg_error;
+
+        // The internal state number register is not protected by regwen_qs
+        assign int_state_num_we = addr_hit[16] & reg_we & !reg_error;
+      ",
+      "impact": "An attacker with register access can maliciously reconfigure the CSRNG at any time, bypassing the configuration lock. This could involve issuing unauthorized commands (e.g., `uninstantiate`), changing the reseed interval to weaken security, creating denial-of-service conditions by enabling interrupts, or manipulating the internal state read pointer to assist in state leakage attacks.",
+      "trigger_condition": "A software attacker with access to the CSRNG memory-mapped registers writes to an unprotected configuration or command register after the `REGWEN` register has been locked (by writing its 'enable' bit to 0).",
+      "recommendations": "Apply the `regwen_qs` gate to the write-enable signals of all configuration and command registers that should be static during operation. Specifically, the write enables `cmd_req_we`, `reseed_interval_we`, `intr_enable_we`, and `int_state_num_we` should be logically ANDed with `regwen_qs`."
+    },
+    {
+      "description": "The `FIPS_FORCE` register, a security-critical control used to force the module into a FIPS-compliant operational mode, is not implemented using multi-bit (mubi) encoding for fault protection. Standard single-bit registers are vulnerable to single-event upsets (SEUs) or intentional fault injection attacks, which can silently alter their state.",
+      "location": "csrng_reg_top.sv:1098-1103",
+      "code_snippet": "
+      prim_subreg #(
+        .DW      (3),
+        .SwAccess(prim_subreg_pkg::SwAccessRW),
+        .RESVAL  (3'h0),
+        .Mubi    (1'b0) // Vulnerability: Mubi protection is disabled
+      ) u_fips_force (
+        .clk_i   (clk_i),
+        .rst_ni  (rst_ni),
+        .we     (fips_force_gated_we),
+        .wd     (fips_force_wd),
+        .q      (reg2hw.fips_force.q),
+        .qs     (fips_force_qs)
+      );
+      ",
+      "impact": "A successful fault injection attack could silently flip a bit in this register. This could disable FIPS-compliant behavior when it is required, undermining the cryptographic guarantees of the module without raising an alert. Conversely, it could force FIPS mode unexpectedly, potentially leading to a denial-of-service if the required entropy source is not ready.",
+      "trigger_condition": "A physical attacker performs a fault injection attack (e.g., voltage glitching, laser fault injection, rowhammer) on the flip-flop storing the `fips_force` register value, causing a bit-flip.",
+      "recommendations": "Enable multi-bit encoding for the `FIPS_FORCE` register by changing its `Mubi` parameter from `1'b0` to `1'b1`. This provides hardware-level detection of single-bit faults on this critical control register, allowing the system to enter an error state rather than operating with a compromised FIPS mode setting."
+    },
+    {
+      "description": "The `REGWEN` register, which functions as the master write-protection lock for other critical registers like `CTRL`, is itself not implemented with multi-bit (mubi) fault protection. This makes it a single point of failure for the register access control security mechanism.",
+      "location": "csrng_reg_top.sv:576-581",
+      "code_snippet": "
+      prim_subreg #(
+        .DW      (1),
+        .SwAccess(prim_subreg_pkg::SwAccessW0C),
+        .RESVAL  (1'h1),
+        .Mubi    (1'b0) // Vulnerability: Mubi protection is disabled
+      ) u_regwen (
+        .clk_i   (clk_i),
+        .rst_ni  (rst_ni),
+        .we     (regwen_we),
+        .wd     (regwen_wd),
+        .qs     (regwen_qs)
+      );
+      ",
+      "impact": "A fault injection attack on the `REGWEN` register could temporarily or permanently disable the write-protection for all registers it gates. This would allow an attacker to bypass the configuration lock and modify sensitive settings in the `CTRL` register, such as disabling the module entirely, enabling internal state readout, or forcing non-FIPS compliant modes.",
+      "trigger_condition": "A physical attacker performs a fault injection attack on the `u_regwen` register's flip-flop. This could cause its output, `regwen_qs`, to incorrectly signal that writes are enabled (`regwen_qs` = 1) even though software had previously locked it.",
+      "recommendations": "Enable multi-bit encoding for the `REGWEN` register by changing its `Mubi` parameter from `1'b0` to `1'b1`. This will provide fault detection on the master lock itself, significantly hardening the entire register access control mechanism against physical fault injection attacks."
+    }
+  ]
+}
+```

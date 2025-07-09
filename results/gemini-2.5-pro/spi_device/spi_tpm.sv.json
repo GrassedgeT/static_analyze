@@ -1,0 +1,90 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The main state machine can enter a deadlock state, leading to a Denial of Service (DoS). If a new SPI write transaction begins while the command FIFO (`cmdaddr_buffer`) is not empty, the FSM transitions from `StAddr` to `StWait`. The condition to exit `StWait` for a write command requires the command FIFO to be empty (`~|sck_cmdaddr_wdepth`). Since the FIFO is not empty, this condition can never be met, causing the FSM to remain in `StWait` indefinitely and ignore the incoming transaction.",
+      "location": "spi_tpm.sv:1212-1239",
+      "code_snippet": "
+// In StAddr state for a write command
+if (cmdaddr_bitcnt == 5'h 1F && cmd_type == Write) begin
+  if (!sck_wrfifo_busy && ~|sck_cmdaddr_wdepth) begin
+    // Ready to accept payload
+    sck_st_d = StStartByte;
+  end else begin
+    // Not ready, go to wait state. This is the entry to the deadlock.
+    sck_st_d = StWait;
+  end
+end // cmd_type == Write
+
+// ...
+
+StWait: begin
+  // ...
+  // at every LSB of a byte, check the next state condition
+  if (isck_p2s_sent &&
+    (((cmd_type == Read) && enough_payload_in_rdfifo) ||
+    // This condition can never be true if we entered StWait because ~|sck_cmdaddr_wdepth was false.
+    ((cmd_type == Write) && !sck_wrfifo_busy && ~|sck_cmdaddr_wdepth))) begin
+    sck_st_d = StStartByte;
+  end
+end // StWait
+      ",
+      "impact": "Denial of Service. The TPM interface becomes unresponsive to the current SPI write transaction and potentially subsequent ones until a hardware reset occurs. The module will be stuck and cannot process further commands.",
+      "trigger_condition": "An external SPI host initiates a TPM write transaction immediately following a previous command that requires software processing, before software has had a chance to read the pending command from the `cmdaddr_buffer` FIFO.",
+      "recommendations": "Decouple the readiness to accept payload from the readiness to queue the command. The check for `sck_cmdaddr_wdepth` should not prevent the FSM from transitioning out of `StWait`. The FSM should proceed to `StWrite` to receive the payload, and only attempt to queue the command at the end of the payload reception, stalling at that point if the command FIFO is full."
+    },
+    {
+      "description": "When handling a hardware-returned read for the `TPM_ACCESS_x` register, the logic fails to check if the requested locality is active before returning its value. The TCG PC Client Platform TPM Profile (PTP) Specification requires that reads to `TPM_ACCESS_x` for an inactive locality must return all 1s (`0xFF`). The hardware instead returns the actual register content, leaking its state.",
+      "location": "spi_tpm.sv:937-945",
+      "code_snippet": "
+unique case (isck_hw_reg_idx)
+  RegAccess: begin
+    for (int unsigned i = 0 ; i < NumLocality ; i++) begin
+      if (!invalid_locality && (4'(i) == locality)) begin
+        // VULNERABILITY: No check for sys_active_locality[i] here.
+        // It returns the register value even if the locality is inactive.
+        isck_hw_reg_word = { {(32-AccessRegSize){1'b1}},
+          sys_clk_tpm_reg.access[AccessRegSize*i+:AccessRegSize]};
+      end
+    end
+  end
+// ...
+endcase
+      ",
+      "impact": "Information Leak. An attacker on the SPI bus can read the `TPM_ACCESS_x` register for a valid but inactive locality. This leaks the internal state of that locality, such as the `requestUse` and `pendingRequest` bits, which could provide insight into pending system operations or aid in planning further attacks.",
+      "trigger_condition": "An external SPI host issues a read command to a valid `TPM_ACCESS_x` register address (e.g., `0xD40000` for locality 0) at a time when that locality is not active (`TPM_ACCESS_0.activeLocality` is 0).",
+      "recommendations": "Modify the `hw_reg_mux` logic to adhere to the TPM specification. Before returning the `TPM_ACCESS_x` register value, add a check for the corresponding `sys_active_locality` bit. If the locality is inactive, the logic must return `32'hFFFF_FFFF`. If it is active, it can return the register's value."
+    },
+    {
+      "description": "The main state machine does not check the `sck_wrfifo_wready` signal from the write FIFO-to-SRAM adapter. In the `StWrite` state, the FSM unconditionally accepts data from the SPI bus every byte, asserting `sck_wrfifo_wvalid` without confirming that the underlying buffer is ready. The `sck_wrfifo_wready` signal is explicitly tied to an `unused_logic` signal, confirming it is ignored.",
+      "location": "spi_tpm.sv:1279-1288, 1556-1560",
+      "code_snippet": "
+// In StWrite state, wrdata_shift_en is always 1, and there is no
+// check on sck_wrfifo_wready before proceeding.
+StWrite: begin
+  wrdata_shift_en = 1'b 1;
+  // Processed by the logic. Does not have to do
+
+  if (sck_wrfifo_wvalid && xfer_size_met) begin
+    // With complete command, upload for SW to process
+    sck_cmdaddr_wvalid = 1'b 1;
+    sck_st_d = StEnd;
+  end
+end // StWrite
+
+// ...
+
+// The ready signal is explicitly marked as unused.
+assign unused_logic = ^{ sck_cmdaddr_wready,
+                         sck_wrfifo_wready,
+                         sck_rdfifo_rvalid,
+                         sck_sram_rerror[SramRdFifo]
+                       };
+      ",
+      "impact": "Data Corruption and Integrity Loss. If the external SPI host sends data faster than the SRAM backend can accept it, the write FIFO will back-pressure (`sck_wrfifo_wready` goes low). Since this is ignored, incoming write data will be silently dropped. The transaction will appear to complete successfully, but the data stored in the TPM's SRAM buffer will be incomplete or corrupted.",
+      "trigger_condition": "An SPI host performs a write transaction at a high clock speed, where the SRAM write latency is significant enough to cause the write FIFO to become full and deassert its ready signal.",
+      "recommendations": "The state machine must be modified to respect the `sck_wrfifo_wready` signal. In the `StWrite` state, the FSM should be stalled or `wrdata_shift_en` should only be asserted when `sck_wrfifo_wready` is high. This ensures that data is only accepted from the SPI bus when there is space in the buffer, preventing data loss."
+    }
+  ]
+}
+```

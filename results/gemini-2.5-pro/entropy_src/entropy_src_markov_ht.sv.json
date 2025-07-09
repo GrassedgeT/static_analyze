@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The Markov health test module (`entropy_src_markov_ht`) has its primary failure-indicating output signals, `test_fail_hi_pulse_o` and `test_fail_lo_pulse_o`, hardcoded to a constant '0'. The module receives high and low thresholds (`thresh_hi_i`, `thresh_lo_i`) and correctly calculates test statistics (`test_cnt_hi_o`, `test_cnt_lo_o`). However, it completely omits the crucial logic to compare these statistics against the thresholds. As a result, this module can never report a health test failure, regardless of the quality of the input entropy.",
+      "location": "entropy_src_markov_ht.sv:158-159",
+      "code_snippet": "\n  // the pulses will be only one clock in length\n  assign test_fail_hi_pulse_o = 1'b0;\n  assign test_fail_lo_pulse_o = 1'b0;\n",
+      "impact": "This vulnerability completely disables the Markov health test, which is a critical security feature for validating the quality of random numbers as per NIST SP 800-90B. A failing or malicious Physical True Random Number Generator (PTRNG) that produces statistically biased data could go undetected. This would allow low-quality, predictable, or otherwise compromised entropy to be fed into the system's cryptographic components, severely undermining the security of all cryptographic operations (e.g., key generation, encryption).",
+      "trigger_condition": "This is a latent design flaw and does not require an active trigger; the check is permanently disabled. The negative security impact occurs when the entropy source (PTRNG) begins to fail or is subjected to a physical attack (e.g., fault injection, environmental changes) that produces a non-random data pattern that the Markov test is designed to detect.",
+      "recommendations": "The comparison logic must be implemented within this module to make the health test functional. The `test_fail_hi_pulse_o` and `test_fail_lo_pulse_o` outputs should be driven by a comparison between the calculated counts and the input thresholds. The check should be synchronized with the `window_wrap_pulse_i` signal to ensure it happens at the end of each test window. A corrected implementation would look like:\n\n```systemverilog\n// Corrected failure pulse logic\nassign test_fail_hi_pulse_o = window_wrap_pulse_i && (test_cnt_hi_o > thresh_hi_i);\nassign test_fail_lo_pulse_o = window_wrap_pulse_i && (test_cnt_lo_o < thresh_lo_i);\n```\n\nThis change localizes the security check within the module responsible for it, adhering to secure design principles."
+    }
+  ]
+}
+```

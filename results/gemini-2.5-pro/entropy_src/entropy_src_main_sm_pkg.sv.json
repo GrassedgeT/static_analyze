@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The main state machine is designed to enter a terminal 'hang' state (`AlertHang` or `Error`) upon detecting a critical failure, such as a health test failure or an FSM integrity error. While intended as a fail-safe mechanism, this creates a Denial of Service (DoS) attack vector. An attacker who can reliably trigger a failure can permanently disable the entropy source, which would halt all cryptographic functions in the system until a full reset occurs.",
+      "location": "entropy_src_main_sm_pkg.sv:49-51",
+      "code_snippet": "\n    AlertState     = 9'b111001101, // if some alert condition occurs, pulse an alert indication\n    AlertHang      = 9'b111111011, // after pulsing alert signal, hang here until sw handles\n    Error          = 9'b001110011  // illegal state reached and hang\n  ",
+      "impact": "A successful attack leads to a permanent Denial of Service for the entropy source. This would likely cascade into a DoS for the entire system, as critical components like the CSRNG and cryptographic accelerators would be starved of entropy.",
+      "trigger_condition": "An attacker could trigger this by: 1. Inducing repeated health test failures through physical means (e.g., manipulating the operating environment of the physical noise source). 2. Using fault injection (e.g., clock/voltage glitching) on the FSM's state register to corrupt its value, forcing a transition to the 'Error' state. The Hamming-distanced encoding makes the FSM sensitive to such faults, which are intended to be caught and routed to this hang state.",
+      "recommendations": "The fail-secure 'hang' is a valid security posture, but its impact should be managed. The system-level response to the alert that precedes the hang must be robust, including detailed logging for forensics. Consider implementing a watchdog timer or a mechanism that allows a trusted authority to attempt a controlled reset of the module for recoverable errors, reducing the window for a DoS attack."
+    },
+    {
+      "description": "The state machine explicitly implements a firmware override feature via the `FWInsertStart` and `FWInsertMsg` states. This feature, controlled by the `FW_OV_CONTROL` register, allows firmware to bypass the physical hardware noise source and inject arbitrary data into the entropy pipeline. If an attacker gains write access to the control register, they can inject a known, non-random value, making the entropy output completely predictable and compromising all system-wide cryptographic operations.",
+      "location": "entropy_src_main_sm_pkg.sv:43-44",
+      "code_snippet": "\n    FWInsertStart  = 9'b011000011, // fw ov mode, start the sha3 block\n    FWInsertMsg    = 9'b001011001, // fw ov mode, insert fw message into sha3 block\n  ",
+      "impact": "Complete compromise of the system's randomness (CWE-1241). An attacker can predict all 'random' numbers, leading to the disclosure of secret keys, generation of predictable cryptographic signatures, and the ability to break any protocol relying on the entropy source. This is a critical, system-wide vulnerability.",
+      "trigger_condition": "An attacker with software execution privileges must gain write access to the `FW_OV_CONTROL` register. This could occur through a software vulnerability (e.g., buffer overflow) in a privileged component or if register lock mechanisms are not correctly configured and activated after boot.",
+      "recommendations": "Access to this highly dangerous feature must be strictly controlled. The `FW_OV_CONTROL` register must be write-locked by hardware immediately after any legitimate boot-time use. This lock should only be clearable by a full system reset. For production devices, this feature should be permanently disabled via fuses or One-Time Programmable (OTP) memory."
+    },
+    {
+      "description": "The comment for the `BootPhaseDone` state indicates that the FSM will 'stay here until master enable is off'. This suggests a potential FSM logic flaw that could lead to a deadlock. If the system software enables the module for continuous operation (e.g., by setting `MODULE_ENABLE`) without first explicitly cycling the disable signal, the FSM could become permanently stuck in `BootPhaseDone`, as it is waiting for a condition that will not be met.",
+      "location": "entropy_src_main_sm_pkg.sv:36",
+      "code_snippet": "\n    BootPhaseDone  = 9'b010001110, // boot mode, stay here until master enable is off\n  ",
+      "impact": "Denial of Service. The entropy source would successfully complete its boot-time operations but would fail to transition to continuous mode, starving the system of entropy post-boot. This would prevent any further cryptographic operations from being performed by the main OS or applications.",
+      "trigger_condition": "This vulnerability is triggered by an incorrect software boot sequence. Specifically, if software sets the `MODULE_ENABLE` register to enable continuous mode while the FSM is in the `BootPhaseDone` state, without first clearing the enable to transition the FSM back to `Idle`.",
+      "recommendations": "Review the FSM transition logic from the `BootPhaseDone` state. Ensure there is a valid and robust transition path out of this state when the module is enabled for continuous operation. If the current logic is intentional, the software programming model must be very clearly documented to require a 'disable-then-enable' sequence. A safer design would include a timeout mechanism that forces a transition to an error or idle state if the FSM remains in `BootPhaseDone` for an excessive period."
+    }
+  ]
+}
+```

@@ -1,0 +1,33 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The life cycle signal decoder logic incorrectly includes the `LcStProd` (Production) state within a case statement block intended for `LcStTestUnlocked` states. Due to the `unique case` statement processing the first match, this causes the highly permissive debug settings of the test states to be applied to the production state. Specifically, it enables DFT (`lc_dft_en`), NVM debug (`lc_nvm_debug_en`), and hardware debug (`lc_hw_debug_en`) functionalities in the `PROD` state, which should be the most secure state of the device.",
+      "location": "lc_ctrl_signal_decode.sv:116",
+      "code_snippet": "
+/*Line107*/:             // Enable DFT and debug functionality, including the CPU in the
+/*Line108*/:             // test unlocked states.
+/*Line109*/:             LcStTestUnlocked0,
+/*Line110*/:             LcStTestUnlocked1,
+/*Line111*/:             LcStTestUnlocked2,
+/*Line112*/:             LcStTestUnlocked3,
+/*Line113*/:             LcStTestUnlocked4,
+/*Line114*/:             LcStTestUnlocked5,
+/*Line115*/:             LcStTestUnlocked6,
+/*Line116*/: 	    LcStProd: begin
+/*Line117*/:               lc_raw_test_rma      = On;
+/*Line118*/:               lc_dft_en            = On;
+/*Line119*/:               lc_nvm_debug_en      = On;
+/*Line120*/:               lc_hw_debug_en       = On;
+/*Line121*/:               lc_cpu_en            = On;
+/*Line122*/:               lc_iso_part_sw_wr_en = On;
+/*Line123*/:               lc_keymgr_div_d      = RndCnstLcKeymgrDivTestUnlocked;
+/*Line124*/:             end
+      ",
+      "impact": "This is a critical vulnerability that completely undermines the security of the device in its production life cycle state. An attacker with physical access to the device's debug interfaces (e.g., JTAG) can gain full control, allowing them to bypass all software security measures, extract device secrets (such as cryptographic keys and private data), and permanently compromise the device. This flaw negates the primary security guarantee of the life cycle controller.",
+      "trigger_condition": "The vulnerability is triggered simply by the device being in the `LcStProd` life cycle state. An attacker with physical access can then connect to the now-enabled debug ports (like JTAG) to exploit this condition.",
+      "recommendations": "The line `LcStProd:` at `lc_ctrl_signal_decode.sv:116` must be removed from this case statement block. The `LcStProd` state should only be handled by its intended, more restrictive case block later in the file (lines 139-154). Additionally, the design and verification process should be updated to treat warnings from `unique case` statements as fatal errors to prevent such logical flaws from being missed in the future."
+    }
+  ]
+}
+```

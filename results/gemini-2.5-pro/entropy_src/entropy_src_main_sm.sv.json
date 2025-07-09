@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The main state machine unconditionally pushes data to the next stage in states `BootPostHTChk` and `Sha3Done` without checking for backpressure (i.e., if the destination FIFO is ready to accept data). If the destination FIFO is full, the FSM will still transition to its next state, but the `main_stage_push_o` signal will be ignored by the full FIFO. This results in the silent loss of an entire block of entropy.",
+      "location": "entropy_src_main_sm.sv:108-110, 248-250",
+      "code_snippet": "\n// Snippet 1: BootPostHTChk state\n          if (!bypass_stage_rdy_i) begin\n          end else begin\n            bypass_stage_pop_o = 1'b1;\n            main_stage_push_o = 1'b1; // Unconditional push, no readiness check\n            state_d = BootPhaseDone;\n          end\n// Snippet 2: Sha3Done state\n          // Push the digest produced by the SHA3 engine into the final FIFO...\n          sha3_done_o = prim_mubi_pkg::MuBi4True;\n          main_stage_push_o = 1'b1; // Unconditional push, no readiness check\n          state_d = Sha3MsgDone;\n      ",
+      "impact": "Denial of Service. Cryptographic modules like CSRNG that depend on this entropy will stall or fail, as they will not receive the data they expect. The system may believe entropy has been generated and delivered when it has actually been dropped, leading to a system-wide cryptographic failure.",
+      "trigger_condition": "An attacker or a slow software consumer prevents the final entropy FIFO from being drained, causing it to become full. When the FSM then reaches the `BootPostHTChk` or `Sha3Done` state to provide new entropy, the data is lost.",
+      "recommendations": "Introduce a `main_stage_rdy_i` input signal to the FSM to indicate that the destination FIFO can accept data. The FSM should only assert `main_stage_push_o` and transition out of the `BootPostHTChk` and `Sha3Done` states when this `main_stage_rdy_i` signal is asserted."
+    },
+    {
+      "description": "If both firmware override mode (`fw_ov_ent_insert_i`) and conditioner bypass mode (`bypass_mode_i`) are enabled, the FSM intentionally transitions back to the `Idle` state. This creates a silent deadlock condition where the entropy source produces no data and generates no errors or alerts. This is an unsupported but reachable configuration that leads to a denial of service.",
+      "location": "entropy_src_main_sm.sv:73-74",
+      "code_snippet": "\n          // running in bypass_mode and fw override mode\n          end else if (bypass_mode_i && fw_ov_ent_insert_i) begin\n            state_d = Idle;\n          end else begin\n            state_d = StartupHTStart;\n          end\n      ",
+      "impact": "Denial of Service. An attacker with privileged register access can configure the module into this state, permanently disabling the system's entropy source and crippling all cryptographic operations. The lack of an alert makes this failure mode difficult to diagnose.",
+      "trigger_condition": "A privileged attacker or buggy software writes to the control registers (`CONF` and `FW_OV_CONTROL`) to simultaneously enable both conditioner bypass and firmware override modes.",
+      "recommendations": "The combination of firmware override and conditioner bypass should be treated as an illegal state. Instead of silently returning to `Idle`, the FSM should transition to the `Error` state and trigger a fatal alert to the alert handler. This ensures the invalid configuration is immediately flagged and acted upon."
+    },
+    {
+      "description": "During the boot-time health test (`BootHTRunning` state), if a single test window fails (`ht_fail_pulse_i`) but the cumulative failure count is not high enough to trigger a persistent alert (`!alert_thresh_fail_i`), the FSM transitions back to `Idle`. This completely restarts the boot-time entropy sequence. This can lead to an infinite loop if the noise source is persistently faulty.",
+      "location": "entropy_src_main_sm.sv:84-93",
+      "code_snippet": "\n          if (ht_fail_pulse_i) begin\n            if (bypass_stage_rdy_i) begin\n              // Remove failed data\n              bypass_stage_pop_o = 1'b1;\n            end\n            if (alert_thresh_fail_i) begin\n              state_d = AlertState;\n            end else begin\n              state_d = Idle; // <-- Returns to Idle on non-critical failure\n            end\n          end else begin\n      ",
+      "impact": "Denial of Service. A faulty or malicious Physical True Random Number Generator (PTRNG) could provide data that consistently fails the health test, preventing the device from ever completing its boot sequence. The device would be caught in an `Idle` -> `BootHTRunning` -> `Idle` loop.",
+      "trigger_condition": "The device is powered on with a faulty PTRNG that produces entropy that fails the health check but does so in a way that does not immediately trigger the alert threshold. This could be due to a hardware fault or a sophisticated fault injection attack on the PTRNG.",
+      "recommendations": "Instead of returning to `Idle` on a boot-time health test failure, the FSM should handle the failure more gracefully. It should discard the failing data and attempt to collect a new window of data without resetting the entire boot process. A counter should be implemented to limit the number of retries before forcing a transition to the `AlertState`, regardless of the `alert_thresh_fail_i` signal, to prevent an infinite loop."
+    }
+  ]
+}
+```

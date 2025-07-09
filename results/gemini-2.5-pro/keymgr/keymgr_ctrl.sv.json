@@ -1,0 +1,64 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The security cross-check for FSM state transitions is incomplete. The logic only monitors for valid transitions into the main operational states (StCtrlRootKey, StCtrlCreatorRootKey, StCtrlOwnerIntKey, StCtrlOwnerKey) and flags an error if they occur without an 'advance' command. However, it fails to monitor transitions into terminal or error states like StCtrlDisabled, StCtrlWipe, or StCtrlInvalid. This omission creates a blind spot in the security monitoring.",
+      "location": "keymgr_ctrl.sv:800-818",
+      "code_snippet": "
+/*Line800*/:   assign vld_state_change_d = (state_d != state_q) &
+/*Line801*/:                               (state_d inside {StCtrlRootKey,
+/*Line802*/:                                                StCtrlCreatorRootKey,
+/*Line803*/:                                                StCtrlOwnerIntKey,
+/*Line804*/:                                                StCtrlOwnerKey});
+...
+/*Line817*/:   logic state_change_err;
+/*Line818*/:   assign state_change_err = vld_state_change_q & !adv_op;
+      ",
+      "impact": "An attacker could use fault injection (e.g., voltage or clock glitching) to induce an illegal state transition to a state like StCtrlDisabled or StCtrlWipe without a proper command. Because this specific security check does not cover these states, the illegal transition would go undetected by this mechanism, potentially allowing an attacker to cause a denial-of-service or bypass intended operational flows without raising a fault.",
+      "trigger_condition": "A fault injection attack that manipulates the FSM state register (`state_q`) to transition to a state not listed in the `vld_state_change_d` assignment (e.g., `StCtrlDisabled`) without the corresponding command being issued.",
+      "recommendations": "Expand the `vld_state_change_d` check to cover all security-critical state transitions. This includes transitions to `StCtrlDisabled`, `StCtrlWipe`, and `StCtrlInvalid`, ensuring that they only occur under the correct, expected conditions (e.g., a `dis_op` command for `StCtrlDisabled`, or a detected fault for `StCtrlWipe`)."
+    },
+    {
+      "description": "When the key generation stage is invalid (`invalid_stage_sel_o` is true), the key material (`key_o.key`) provided to the internal KMAC unit is constructed by replicating a small portion of entropy (`entropy_i`) multiple times. This significantly reduces the entropy and strength of the key used in the cryptographic operation.",
+      "location": "keymgr_ctrl.sv:279-284",
+      "code_snippet": "
+/*Line279*/:   assign invalid_stage_sel_o = ~(stage_sel_o inside {Creator, OwnerInt, Owner});
+/*Line280*/:   for (genvar i = 0; i < Shares; i++) begin : gen_key_out_assign
+/*Line281*/:     assign key_o.key[i] = invalid_stage_sel_o ?
+/*Line282*/:                           {EntropyRounds{entropy_i[i]}} :
+/*Line283*/:                           key_state_q[cdi_sel_o][i];
+/*Line284*/:   end
+      ",
+      "impact": "If an attacker can force an invalid stage selection during a key derivation step, the KMAC operation will use a weak, predictable key. This could compromise the cryptographic integrity of the derived key, potentially allowing an attacker to predict or influence the output, thereby undermining the entire key hierarchy.",
+      "trigger_condition": "An attacker issues an invalid command for the current FSM state, or uses fault injection to corrupt the `stage_sel_o` signal. This forces `invalid_stage_sel_o` to be true while a KMAC operation is active, causing the replicated, low-entropy value to be used as the key.",
+      "recommendations": "When an invalid stage is selected, the key material provided to the KMAC should not be a replicated, low-entropy value. Instead, it should be a cryptographically safe value, such as a constant all-zeros or all-ones pattern, or a freshly generated random number that is not replicated. This prevents the use of a weak key in any cryptographic operation."
+    },
+    {
+      "description": "The key state memory can be overwritten by the KMAC output if an undefined or illegal operation is issued by software. The signal `dis_op` is defined as any operation that is not `Advance` or `Generate`, which inadvertently includes illegal opcodes. The key update logic at line 389 uses `dis_op` to authorize a write to the key state, creating a path for corruption.",
+      "location": "keymgr_ctrl.sv:154, 389",
+      "code_snippet": "
+/*Line154*/:   assign dis_op    = ~(op_i inside {OpAdvance, OpGenId, OpGenSwOut, OpGenHwOut});
+...
+/*Line389*/:         key_state_d[cdi_sel_o] = (adv_op || dis_op) ? kmac_data_i : key_state_q[cdi_sel_o];
+      ",
+      "impact": "An attacker with register write access could issue an undefined operation code. This would cause `dis_op` to assert, triggering a key update with the output of the KMAC operation. This allows for the corruption of a secret key slot with potentially attacker-influenced data, breaking the integrity of the key derivation chain.",
+      "trigger_condition": "Software with access to the key manager's control registers writes an undefined opcode to the `op_i` field and starts an operation. This sets `dis_op` to true, and when the KMAC operation completes, the `KeyUpdateKmac` logic is triggered, overwriting the current key state.",
+      "recommendations": "The definition of `dis_op` should be more explicit and restrictive. Instead of using a broad negation, it should explicitly check for known 'disable' operations (e.g., `op_i == OpDisable`). This ensures that only intentionally defined commands can trigger a key state update, and all other undefined opcodes are handled as errors without modifying critical state."
+    },
+    {
+      "description": "When the `KmacEnMasking` parameter is configured to be false, the root key loading logic overwrites the first share of the key state (`key_state_d[i][0]`) instead of XORing with it. This action discards the random data that was loaded into the key state in the preceding `StCtrlRandom` state, nullifying the initial masking step.",
+      "location": "keymgr_ctrl.sv:372-376",
+      "code_snippet": "
+/*Line372*/:             end else begin : gen_one_share_key
+/*Line373*/:               key_state_d[i][0] = root_key_i.creator_root_key_share0 ^
+/*Line374*/:                                   root_key_i.creator_root_key_share1;
+/*Line375*/:               key_state_d[i][1] = '0;
+/*Line376*/:             end
+      ",
+      "impact": "The removal of the random mask weakens the initial key material. The first key share becomes a direct derivative of the OTP root key, without any per-boot randomness. This reduces the security against side-channel and fault-injection attacks, as the initial state is no longer randomized.",
+      "trigger_condition": "The hardware is synthesized with the `KmacEnMasking` parameter set to 0. During boot, when the FSM transitions to `StCtrlRootKey` and `update_sel` is `KeyUpdateRoot`, this logic is executed.",
+      "recommendations": "The key loading logic should be consistent regardless of the `KmacEnMasking` parameter. The assignment at line 373 should be changed from a direct assignment (`=`) to an XOR assignment (`^=`) to ensure the random mask loaded in the `StCtrlRandom` state is always preserved. This maintains the per-boot randomization of the initial key material in all configurations."
+    }
+  ]
+}
+```

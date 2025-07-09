@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "Multiple registers intended to be Read-Only (RO), such as LC_STATE, LC_TRANSITION_CNT, LC_ID_STATE, and DEVICE_ID, have their byte-level write permissions defined in the `LC_CTRL_PERMIT` array to allow writes. This array is used by the bus interface logic to validate transactions. While the register logic itself is expected to enforce the RO policy, setting permissive write enables at the interface level violates the principle of defense-in-depth. A bug in the register logic could make this misconfiguration exploitable, allowing software to modify critical hardware status registers.",
+      "location": "lc_ctrl_reg_pkg.sv:356-368",
+      "code_snippet": "\n// Register width information to check illegal writes\nparameter logic [3:0] LC_CTRL_PERMIT [35] = '{\n  // ... (other registers)\n  4'b 1111, // index[14] LC_CTRL_LC_STATE\n  4'b 0001, // index[15] LC_CTRL_LC_TRANSITION_CNT\n  4'b 1111, // index[16] LC_CTRL_LC_ID_STATE\n  4'b 1111, // index[17] LC_CTRL_HW_REVISION0\n  4'b 1111, // index[18] LC_CTRL_HW_REVISION1\n  4'b 1111, // index[19] LC_CTRL_DEVICE_ID_0\n  4'b 1111, // index[20] LC_CTRL_DEVICE_ID_1\n  4'b 1111, // index[21] LC_CTRL_DEVICE_ID_2\n  4'b 1111, // index[22] LC_CTRL_DEVICE_ID_3\n  4'b 1111, // index[23] LC_CTRL_DEVICE_ID_4\n  4'b 1111, // index[24] LC_CTRL_DEVICE_ID_5\n  4'b 1111, // index[25] LC_CTRL_DEVICE_ID_6\n  4'b 1111, // index[26] LC_CTRL_DEVICE_ID_7\n  // ... (other registers)\n};\n      ",
+      "impact": "If an attacker could write to the `LC_STATE` register, they could mislead software about the device's true life cycle state. For example, software might read a spoofed 'DEV' state while the device is actually in 'PROD', causing it to enable insecure features like JTAG or to grant access to protected memory regions. This could lead to a full security bypass, allowing extraction of secrets or device manipulation.",
+      "trigger_condition": "An attacker with software execution privileges or access to the TL-UL bus performs a write operation to the address of a Read-Only register, such as `LC_STATE` at offset `0x38`. The vulnerability becomes exploitable if the register top logic (`lc_ctrl_reg_top`) has a flaw that prevents it from correctly ignoring the write transaction, which has been incorrectly permitted by the bus interface.",
+      "recommendations": "The register configuration file (likely `lc_ctrl.hjson`) used by the `reggen` tool should be updated to correctly mark all Read-Only registers. This will cause `reggen` to generate the `LC_CTRL_PERMIT` array with `4'b0000` for these registers, ensuring that illegal write attempts are blocked at the bus interface level, thus restoring the defense-in-depth security posture."
+    }
+  ]
+}
+```

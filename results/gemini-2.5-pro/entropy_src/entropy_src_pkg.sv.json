@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The default value for the health test response structure, `ENTROPY_SRC_XHT_RSP_DEFAULT`, is defined with the failure flags (`test_fail_hi_pulse`, `test_fail_lo_pulse`) set to '0'. This creates an insecure 'fail-open' condition. If a health test sub-module is improperly gated, held in reset, or otherwise disabled during integration, its output response signal might revert to this default. The main state machine consuming this response would interpret the '0' on the failure flags as a passing health check, allowing untested and potentially low-quality entropy to pass through the system. A secure default should always indicate a failure, ensuring that any unconnected or malfunctioning test block causes the system to halt rather than proceed with unverified data.",
+      "location": "entropy_src_pkg.sv:84-85",
+      "code_snippet": "\n  parameter entropy_src_xht_rsp_t ENTROPY_SRC_XHT_RSP_DEFAULT =\n      '{test_cnt_lo: 16'hffff, default: '0};\n",
+      "impact": "This vulnerability can completely undermine the SP 800-90B health tests, which are a critical security feature for validating the quality of the raw entropy. If low-quality or even non-random data is allowed to pass the health check stage due to this insecure default, the cryptographic strength of the entire system could be compromised, as the downstream CSRNG would be seeded with predictable or biased values.",
+      "trigger_condition": "A design or integration error, such as a health test module being conditionally instantiated but its outputs not being tied to a safe 'fail' value in the disabled case. While not directly triggerable by software, it is a latent hardware design flaw that makes the system vulnerable to other bugs or misconfigurations. An attacker would not trigger this directly but would exploit the resulting weakened entropy.",
+      "recommendations": "The default parameter for the health test response should be modified to be 'fail-safe'. Specifically, at least one of the failure flags should be set to '1' by default. For example: `parameter entropy_src_xht_rsp_t ENTROPY_SRC_XHT_RSP_DEFAULT = '{test_fail_lo_pulse: 1'b1, default: '0};`. This ensures that any undriven health test response interface will signal an error by default, forcing the main state machine into a safe, halted state."
+    }
+  ]
+}
+```

@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The state machine for the hardware acknowledge interface (`entropy_src_ack_sm`) does not correctly implement a full req/ack handshake protocol. After a consumer requests data (`req_i` = 1) and data is available (`fifo_not_empty_i` = 1), the state machine asserts `ack_o` and `fifo_pop_o` for a single cycle and immediately transitions from the `Wait` state back to `Idle`. It does not wait for the consumer to de-assert `req_i`. If the consumer keeps `req_i` asserted, the state machine will continuously cycle between `Idle` and `Wait` every two clock cycles, popping one word from the entropy FIFO on each cycle. This allows a single consumer to drain the entire entropy FIFO.",
+      "location": "entropy_src_ack_sm.sv:33-50",
+      "code_snippet": "\n/*Line33*/:       Idle: begin\n/*Line34*/:         if (enable_i) begin\n/*Line35*/:           if (req_i) begin\n/*Line36*/:             state_d = Wait;\n/*Line37*/:           end\n/*Line38*/:         end\n/*Line39*/:       end\n/*Line40*/:       Wait: begin\n/*Line41*/:         if (!enable_i) begin\n/*Line42*/:           state_d = Idle;\n/*Line43*/:         end else begin\n/*Line44*/:           if (fifo_not_empty_i) begin\n/*Line45*/:             ack_o = 1'b1;\n/*Line46*/:             fifo_pop_o = 1'b1;\n/*Line47*/:             state_d = Idle; // Flaw: Unconditionally returns to Idle\n/*Line48*/:           end\n/*Line49*/:         end\n/*Line50*/:       end\n      ",
+      "impact": "A malicious or faulty hardware consumer (e.g., CSRNG) can mount a Denial of Service (DoS) attack by holding its `req_i` signal high. This will cause the `entropy_src` to continuously supply it with entropy, draining the output FIFO. This starves other system components, including software, that rely on the `entropy_src` for cryptographic material, potentially halting all secure operations on the chip.",
+      "trigger_condition": "A hardware consumer connected to the `entropy_src` hardware interface asserts its `req_i` signal and does not de-assert it after receiving the `ack_o` signal. This can be caused by a bug in the consumer's logic, a malicious hardware Trojan, or a fault injection attack that causes the `req_i` line to be stuck high.",
+      "recommendations": "The state machine logic should be modified to implement a complete handshake. The state machine should not transition from the `Wait` state back to `Idle` until the requesting consumer has de-asserted `req_i`. A common approach is to remain in an 'acknowledge' state while `req_i` is high, and only transition back to `Idle` once `req_i` is low. This ensures that only one data word is transferred per request."
+    }
+  ]
+}
+```

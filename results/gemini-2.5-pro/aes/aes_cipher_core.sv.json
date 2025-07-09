@@ -1,0 +1,64 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The internal registers that store sensitive cryptographic state (`state_q`, `key_full_q`, `key_dec_q`) are reset to a constant value of all zeros on an asynchronous reset. This behavior contradicts the design's security policy of wiping sensitive registers with pseudo-random data, which is only performed under FSM control. An asynchronous reset bypasses this secure clearing mechanism.",
+      "location": "aes_cipher_core.sv:256-262, aes_cipher_core.sv:447-453",
+      "code_snippet": "
+/*Line256*/:   always_ff @(posedge clk_i or negedge rst_ni) begin : state_reg
+/*Line257*/:     if (!rst_ni) begin
+/*Line258*/:       state_q <= '{default: '0};
+/*Line259*/:     end else if (state_we == SP2V_HIGH) begin
+/*Line260*/:       state_q <= state_d;
+/*Line261*/:     end
+/*Line262*/:   end
+...
+/*Line447*/:   always_ff @(posedge clk_i or negedge rst_ni) begin : key_full_reg
+/*Line448*/:     if (!rst_ni) begin
+/*Line449*/:       key_full_q <= '{default: '0};
+/*Line450*/:     end else if (key_full_we == SP2V_HIGH) begin
+/*Line451*/:       key_full_q <= key_full_d;
+/*Line452*/:     end
+/*Line453*/:   end
+      ",
+      "impact": "Forcing the device into reset sets the internal state to a known, low-entropy value (all zeros) instead of a random one. This is a weaker security posture and could aid certain attacks. If a reset is triggered mid-operation, sensitive intermediate state is not securely wiped, potentially leading to data remanence if the reset is imperfect or can be precisely controlled by an attacker.",
+      "trigger_condition": "An attacker or system event that can trigger the top-level asynchronous reset `rst_ni` of the module.",
+      "recommendations": "The reset logic for sensitive registers should be modified to ensure a secure wipe is performed. This can be achieved by making the reset synchronous and having the reset handler in the control FSM transition to a dedicated clearing state. This state would load pseudo-random data from `prd_clearing_state_i` and `prd_clearing_key_i` into the registers before the FSM proceeds to its normal idle state."
+    },
+    {
+      "description": "The `u_aes_key_mix_columns` instance, which performs the `InvMixColumns` operation required for the decryption key schedule, is unconditionally instantiated regardless of the `CiphOpFwdOnly` parameter. Its operation is hardcoded to `CIPH_INV`, leaving a critical decryption primitive in the hardware even in an 'encryption-only' configuration.",
+      "location": "aes_cipher_core.sv:529-533",
+      "code_snippet": "
+/*Line529*/:     aes_mix_columns u_aes_key_mix_columns (
+/*Line530*/:       .op_i   ( CIPH_INV               ),
+/*Line531*/:       .data_i ( key_bytes[s]           ),
+/*Line532*/:       .data_o ( key_mix_columns_out[s] )
+/*Line533*/:     );
+      ",
+      "impact": "This unnecessarily increases the attack surface in configurations intended to be encryption-only. A sophisticated fault injection attack could potentially bypass the control logic (e.g., the `round_key_mux`) and force the core to use the output of this block. This would undermine the `CiphOpFwdOnly` security guarantee and could enable unauthorized decryption-related operations.",
+      "trigger_condition": "The IP is synthesized with the `CiphOpFwdOnly` parameter set to 1. An attacker with physical access could use fault injection (e.g., laser or clock glitching) to corrupt the `round_key_sel` signal and activate the latent decryption logic.",
+      "recommendations": "The instantiation of the `u_aes_key_mix_columns` module should be wrapped in a `generate if (!CiphOpFwdOnly)` block. This will ensure that the hardware for this decryption-specific operation is completely removed from the synthesized design when `CiphOpFwdOnly` is true, adhering to the principle of minimizing attack surface."
+    },
+    {
+      "description": "The module's security against side-channel attacks is critically dependent on the `SecSBoxImpl` parameter, which selects the S-Box implementation. The design allows for insecure configurations where masking (`SecMasking=1`) is enabled but an unmasked S-Box implementation (e.g., `SBoxImplLut`) is selected. The `ASSERT_INIT` check for this condition is a simulation-only construct and does not prevent the synthesis of a vulnerable configuration.",
+      "location": "aes_cipher_core.sv:100, aes_cipher_core.sv:379-381, aes_cipher_core.sv:493-496",
+      "code_snippet": "
+/*Line100*/:   parameter sbox_impl_e  SecSBoxImpl          = SBoxImplDom,
+...
+/*Line379*/:   aes_sub_bytes #(
+/*Line380*/:     .SecSBoxImpl ( SecSBoxImpl )
+/*Line381*/:   ) u_aes_sub_bytes ( ... );
+...
+/*Line493*/:   aes_key_expand #(
+/*Line494*/:     .AES192Enable ( AES192Enable ),
+/*Line495*/:     .SecMasking   ( SecMasking   ),
+/*Line496*/:     .SecSBoxImpl  ( SecSBoxImpl  )
+/*Line497*/:   ) u_aes_key_expand ( ... );
+      ",
+      "impact": "If the module is instantiated with a non-masked S-Box (e.g., a simple Look-Up Table) while masking is enabled, the entire masking countermeasure is defeated. This would expose the core to simple side-channel attacks (e.g., Differential Power Analysis), allowing an attacker to easily extract the secret AES key.",
+      "trigger_condition": "An integrator misconfigures the IP during instantiation, setting `SecMasking=1` but providing an insecure value for the `SecSBoxImpl` parameter, such as `SBoxImplLut` or `SBoxImplCanright`.",
+      "recommendations": "To prevent insecure configurations, use synthesizable logic to enforce security parameter dependencies. Instead of relying on simulation assertions, use `generate if` statements to conditionally instantiate different versions of `aes_sub_bytes` and `aes_key_expand`. For example, if `SecMasking` is true, the generate block should only contain instantiations that use a masked S-Box implementation, causing a synthesis error for invalid combinations."
+    }
+  ]
+}
+```

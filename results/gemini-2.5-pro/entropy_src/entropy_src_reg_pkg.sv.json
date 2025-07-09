@@ -1,0 +1,33 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The default reset values for the health test threshold registers are set to trivial, non-functional values (e.g., maximum for high thresholds, zero for low thresholds). This effectively disables the NIST SP 800-90B health checks upon reset, creating a window of vulnerability before software can configure them.",
+      "location": "entropy_src_reg_pkg.sv:857-883",
+      "code_snippet": "
+parameter logic [31:0] ENTROPY_SRC_REPCNT_THRESHOLDS_RESVAL = 32'h ffffffff;\nparameter logic [15:0] ENTROPY_SRC_REPCNT_THRESHOLDS_FIPS_THRESH_RESVAL = 16'h ffff;\nparameter logic [15:0] ENTROPY_SRC_REPCNT_THRESHOLDS_BYPASS_THRESH_RESVAL = 16'h ffff;\nparameter logic [31:0] ENTROPY_SRC_REPCNTS_THRESHOLDS_RESVAL = 32'h ffffffff;\n...\nparameter logic [31:0] ENTROPY_SRC_ADAPTP_HI_THRESHOLDS_RESVAL = 32'h ffffffff;\n...\nparameter logic [31:0] ENTROPY_SRC_ADAPTP_LO_THRESHOLDS_RESVAL = 32'h 0;\n...\nparameter logic [31:0] ENTROPY_SRC_BUCKET_THRESHOLDS_RESVAL = 32'h ffffffff;\n...\nparameter logic [31:0] ENTROPY_SRC_MARKOV_HI_THRESHOLDS_RESVAL = 32'h ffffffff;\n...\nparameter logic [31:0] ENTROPY_SRC_MARKOV_LO_THRESHOLDS_RESVAL = 32'h 0;\n",
+      "impact": "This allows low-quality or non-random data from a faulty or malicious Physical True Random Number Generator (PTRNG) to pass the health tests and be consumed by the system's cryptographic components. This could severely weaken or break cryptographic operations initiated early in the boot sequence.",
+      "trigger_condition": "This vulnerability is present by default after every reset. An attacker could exploit this by resetting the device and interrupting the boot process before secure software has a chance to write secure threshold values. It could also be triggered by a software bug that fails to configure these registers.",
+      "recommendations": "The reset values for all health test thresholds should be changed from trivial values to secure, functional defaults as recommended by NIST SP 800-90B. This ensures the health tests are active with a reasonable configuration immediately upon reset, closing the vulnerability window."
+    },
+    {
+      "description": "The `ALERT_THRESHOLD` register contains `alert_threshold` and `alert_threshold_inv` fields, a design pattern intended to protect against fault attacks by requiring one field to be the bitwise inverse of the other. However, these fields are defined as standard `logic` types and not multi-bit (mubi) integrity-protected types.",
+      "location": "entropy_src_reg_pkg.sv:234-241",
+      "code_snippet": "
+  typedef struct packed {\n    struct packed {\n      logic [15:0] q;\n    } alert_threshold_inv;\n    struct packed {\n      logic [15:0] q;\n    } alert_threshold;\n  } entropy_src_reg2hw_alert_threshold_reg_t;\n",
+      "impact": "The lack of mubi protection makes the register fields susceptible to single-bit-flip fault injection attacks. An attacker could flip a bit in one field, breaking the inverse relationship without being detected by the register interface. This can disable the hardware logic that relies on this check, potentially silencing a critical security alert about failing health checks and allowing the system to use compromised entropy.",
+      "trigger_condition": "A physical fault injection attack (e.g., voltage glitching, laser fault injection) targeting the register file memory cells where these values are stored.",
+      "recommendations": "The two 16-bit fields should be replaced with a single, wider register field that uses a proper hardware integrity scheme. For example, the value and its inverse could be packed into a single word, and the hardware that consumes this register should be responsible for verifying the inverse relationship on every use, triggering a fatal error if the check fails."
+    },
+    {
+      "description": "The `DEBUG_STATUS` register, an 11-bit read-only register, is assigned a reset value parameter (`ENTROPY_SRC_DEBUG_STATUS_RESVAL`) that is 18 bits wide and has a value (`18'h10000`) that sets a bit far outside the register's actual bounds. This indicates a copy-paste or auto-generation error.",
+      "location": "entropy_src_reg_pkg.sv:915",
+      "code_snippet": "
+// From the hw2reg typedef, the debug_status register is 11 bits wide:\n// entropy_src_hw2reg_debug_status_reg_t debug_status; // [80:70]\n\n// The reset parameter is erroneously defined as 18 bits wide:\nparameter logic [17:0] ENTROPY_SRC_DEBUG_STATUS_RESVAL = 18'h 10000;\n",
+      "impact": "This design flaw will cause the `DEBUG_STATUS` register to initialize to an incorrect and unpredictable value after reset. Software or security monitoring logic that reads this register to check the module's initial state will receive garbage data, which could mask real hardware faults or lead to incorrect diagnostic conclusions.",
+      "trigger_condition": "This is a design flaw that is triggered on every hardware reset of the module.",
+      "recommendations": "The `ENTROPY_SRC_DEBUG_STATUS_RESVAL` parameter must be corrected to match the 11-bit width of the `DEBUG_STATUS` register. Its value should be set according to the defined reset values of its subfields, such as `main_sm_idle` being '1'. The corrected parameter should be `parameter logic [10:0] ENTROPY_SRC_DEBUG_STATUS_RESVAL = 11'h40;` (or `11'b0010000000` assuming `main_sm_idle` is at bit 6) or whatever value correctly reflects the intended reset state of all 11 bits."
+    }
+  ]
+}
+```

@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "A secret token required for transitioning the device out of its initial 'RAW' state is hardcoded as a constant parameter in the design. This token, intended to be a secret for authenticating the transition command, is publicly visible in the RTL source code. This constitutes a 'universal key' that is identical for every chip produced from this design.",
+      "location": "lc_ctrl_state_pkg.sv:417-419",
+      "code_snippet": "        parameter lc_token_t RndCnstRawUnlockToken = {\n          128'hEA2B3F32CBE77554E43C8EA7EBF197C2\n        };\n",
+      "impact": "An attacker with access to a device in the 'RAW' life cycle state can use this publicly known token to perform an authorized state transition to a less secure state, such as 'TEST_UNLOCKED' or 'DEV'. This would enable debug features (like JTAG) and allow the attacker to load their own code, extract device-specific secrets, or provision a fraudulent device identity, completely compromising the device's security before it is even personalized.",
+      "trigger_condition": "An attacker with software execution or bus access on a device in the 'RAW' state can write the hardcoded token value (128'hEA2B3F32CBE77554E43C8EA7EBF197C2) to the TRANSITION_TOKEN registers and issue a valid transition command. The lc_ctrl module will validate this public token as authentic and proceed with the state change.",
+      "recommendations": "Secret tokens must not be hardcoded in the RTL. The value for the RAW unlock token hash should be provisioned into a secret, one-time-programmable (OTP) memory location during manufacturing. The lc_ctrl logic should be modified to read the expected hash from this secret OTP location for comparison, rather than comparing against a hardcoded constant. This ensures the token remains secret and can be unique per device or batch, eliminating the universal key."
+    }
+  ]
+}
+```

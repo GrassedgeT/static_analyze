@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The repetitive count health test counter can be synchronously reset to its initial state (a count of 1) at any time by asserting the `clear_i` input. This input is part of the expression driving the counter's `set_i` port. An attacker who can control this signal can repeatedly reset the counter before it reaches the failure threshold, effectively disabling the test.",
+      "location": "entropy_src_repcnt_ht.sv:81",
+      "code_snippet": "      // NIST B counter\n      // SEC_CM: CTR.REDUN\n      prim_count #(\n        .Width(RegWidth)\n      ) u_prim_count_rep_cntr (\n        .clk_i,\n        .rst_ni,\n        .clr_i(1'b0),\n        .set_i(!active_i || clear_i || samples_no_match_pulse[sh]),\n        .set_cnt_i(RegWidth'(1)),\n        .incr_en_i(samples_match_pulse[sh]),\n        .decr_en_i(1'b0),\n        .step_i(RegWidth'(1)),\n        .commit_i(1'b1),\n        .cnt_o(rep_cntr[sh]),\n        .cnt_after_commit_o(),\n        .err_o(rep_cntr_err[sh])\n      );",
+      "impact": "This vulnerability allows a malicious actor to blind a critical security feature. By preventing the repetitive count test from ever failing, a faulty or hostile entropy source (e.g., one that is stuck-at or produces a non-random pattern) can go undetected. This would feed compromised entropy into the system's cryptographic core (CSRNG), leading to predictable and insecure cryptographic keys, nonces, and other materials.",
+      "trigger_condition": "An attacker gains write-access to the software-accessible control register that generates the `clear_i` signal. The attacker can then periodically pulse this signal (e.g., every N cycles, where N is less than the failure threshold) to ensure the repetition counter is perpetually reset, thereby bypassing the check.",
+      "recommendations": "The ability to clear the health test counters should be strictly controlled. The `clear_i` signal should be gated by logic that ensures it can only be asserted when the main entropy source state machine is in an idle or configuration state (e.g., `Idle`, `Boot`, `Startup`). It must be disabled during the `Continuous` operational state to prevent runtime attacks. Access to the register controlling this clear function should also be locked after initial configuration."
+    }
+  ]
+}
+```

@@ -1,0 +1,71 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The KEY_SHARE0 registers, which are intended to be write-only to protect secret key material, can be read by software. The read data multiplexer incorrectly routes the output of the key share registers to the read data bus when their corresponding addresses are accessed.",
+      "location": "aes_reg_top.sv:1684-1714",
+      "code_snippet": "
+// Read data return
+always_comb begin
+  reg_rdata_next = '0;
+  unique case (1'b1)
+    // ...
+    addr_hit[1]: begin
+      reg_rdata_next[31:0] = reg2hw.key_share0[0].q;
+    end
+    addr_hit[2]: begin
+      reg_rdata_next[31:0] = reg2hw.key_share0[1].q;
+    end
+    // ... and so on for addr_hit[3] through addr_hit[8]
+    // ...
+  endcase
+end
+      ",
+      "impact": "Critical information disclosure. This allows any software with access to the AES peripheral to read one of the secret key shares directly. This fundamentally breaks the security of the masking countermeasure and drastically reduces the complexity of a full key recovery attack.",
+      "trigger_condition": "A standard read operation from the bus to any of the KEY_SHARE0 register addresses (from AES_KEY_SHARE0_0_OFFSET to AES_KEY_SHARE0_7_OFFSET).",
+      "recommendations": "The read data multiplexer logic for the KEY_SHARE0 addresses must be changed to return a constant, non-sensitive value, such as 32'h0. This enforces the write-only security policy and prevents key material from ever being exposed on the read bus."
+    },
+    {
+      "description": "The default case in the register read data multiplexer leaks sensitive information. If a read occurs to an unmapped address within the peripheral's range, the hardware defaults to returning the contents of the first word of the secret key register, `reg2hw.key_share0[0].q`.",
+      "location": "aes_reg_top.sv:1831-1834",
+      "code_snippet": "
+// ... inside read data multiplexer always_comb block
+    default: begin
+      reg_rdata_next = reg2hw.key_share0[0].q;
+    end
+  endcase
+end
+      ",
+      "impact": "Critical information disclosure. This provides a pathway to leak a portion of the secret key. An attacker who can issue a read to an unmapped address, potentially through a software bug or a fault injection attack (e.g., glitching the address bus), can exfiltrate key material.",
+      "trigger_condition": "A bus read operation to an address within the AES peripheral's memory map that is not explicitly assigned to a register. This could be an unused/reserved address.",
+      "recommendations": "The default case of the read data multiplexer must be modified to return a fixed, non-sensitive value, such as 32'h00000000. This is a standard security practice to prevent information leakage from accidental or malicious reads to unmapped addresses."
+    },
+    {
+      "description": "Reading from the KEY_SHARE1 register addresses results in incorrect and unintended behavior. Reads to the first four words of KEY_SHARE1 return the contents of the DATA_IN registers, while reads to the last four words return a hardcoded zero. This is a severe functional bug and a potential information leak.",
+      "location": "aes_reg_top.sv:1716-1746",
+      "code_snippet": "
+// ... inside read data multiplexer always_comb block
+    addr_hit[9]: begin
+      reg_rdata_next[31:0] = data_in_0_qs;
+    end
+    addr_hit[10]: begin
+      reg_rdata_next[31:0] = data_in_1_qs;
+    end
+    addr_hit[11]: begin
+      reg_rdata_next[31:0] = data_in_2_qs;
+    end
+    addr_hit[12]: begin
+      reg_rdata_next[31:0] = data_in_3_qs;
+    end
+    addr_hit[13]: begin
+      reg_rdata_next[31:0] = '0;
+    end
+// ... and so on for addr_hit[14] through addr_hit[16]
+      ",
+      "impact": "Information Disclosure and Functional Bug. This flaw leaks the content of the `DATA_IN` buffer (plaintext or ciphertext) when `KEY_SHARE1` is read. This could be used as a covert channel or to bypass memory protections if an attacker can control `DATA_IN` and trick a privileged process into reading `KEY_SHARE1`. It also breaks the write-only contract for key registers.",
+      "trigger_condition": "A software read from the addresses corresponding to KEY_SHARE1 registers (AES_KEY_SHARE1_0_OFFSET to AES_KEY_SHARE1_7_OFFSET).",
+      "recommendations": "The read multiplexer logic for all KEY_SHARE1 addresses should be corrected to enforce the write-only policy. All reads to these addresses should return a constant value, such as 32'h0, preventing both the key and the DATA_IN values from being read."
+    }
+  ]
+}
+```

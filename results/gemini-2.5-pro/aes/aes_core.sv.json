@@ -1,0 +1,63 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The multiplexer logic for the 'data_in_prev_d' signal, which feeds the register holding the previous data block for modes like CBC, has a logical flaw. The 'DIP_CLEAR' case incorrectly assigns the current input data ('data_in') instead of a clearing value. This means that when the control logic attempts to clear the 'data_in_prev_q' register, it instead reloads it with the current input data, failing the wipe operation.",
+      "location": "aes_core.sv:367-373",
+      "code_snippet": "
+/*Line367*/:   always_comb begin : data_in_prev_mux
+/*Line368*/:     unique case (data_in_prev_sel)
+/*Line369*/:       DIP_DATA_IN: data_in_prev_d = data_in;
+/*Line370*/:       DIP_CLEAR:   data_in_prev_d = data_in;
+/*Line371*/:       default:     data_in_prev_d = prd_clearing_data;
+/*Line372*/:     endcase
+/*Line373*/:   end
+      ",
+      "impact": "Failure to clear this register can lead to information leakage or incorrect cryptographic operations. In CBC decryption, this register holds the previous ciphertext block needed for the next XOR operation. If not cleared properly between messages, it could lead to data from one message being used to decrypt another. It also leaves sensitive data remnants in the register when it should have been wiped.",
+      "trigger_condition": "This vulnerability is triggered whenever the control FSM selects the 'DIP_CLEAR' path for the 'data_in_prev_sel' multiplexer. This would occur during state-clearing operations initiated by software via the TRIGGER register or automatically by the FSM between operations.",
+      "recommendations": "The assignment in the 'DIP_CLEAR' case should be corrected to assign the pseudo-random clearing data, similar to the 'default' case. Change line 370 from 'data_in_prev_d = data_in;' to 'data_in_prev_d = prd_clearing_data;'."
+    },
+    {
+      "description": "When the 'SecMasking' parameter is set to '0' (disabled), the hardware combines the two key shares by performing a direct XOR operation: 'key_init_cipher[0] = key_init_q[0] ^ key_init_q[1]'. This operation places the full, unmasked secret key onto the 'key_init_cipher' net. The power consumption of this combinational logic is directly dependent on the Hamming weight of the secret key, creating a significant side-channel analysis (SCA) vulnerability.",
+      "location": "aes_core.sv:454-457",
+      "code_snippet": "
+/*Line454*/:   if (!SecMasking) begin : gen_key_init_unmasked
+/*Line455*/:     // Combine the two key shares for the unmasked cipher core. This causes SCA leakage of the key
+/*Line456*/:     // and thus should be avoided.
+/*Line457*/:     assign key_init_cipher[0] = key_init_q[0] ^ key_init_q[1];
+      ",
+      "impact": "An attacker with physical access to the device can use power analysis techniques (e.g., Differential Power Analysis) to monitor the power consumption during this XOR operation and recover the full secret key. This completely compromises the confidentiality provided by the AES encryption.",
+      "trigger_condition": "The IP must be instantiated with the 'SecMasking' parameter set to '0'. While a static assertion exists to discourage this, it can be bypassed by an integrator. Any subsequent AES operation would then trigger the vulnerable computation.",
+      "recommendations": "The unmasked path should be removed entirely to enforce that masking is always active, making 'SecMasking' a non-optional feature. If an unmasked version is absolutely required for non-secure applications, it should be redesigned to avoid the on-the-fly XORing of shares. For example, the key could be loaded as a single, unmasked value directly, which would still be weak but would not have this specific leakage point."
+    },
+    {
+      "description": "The module's core security features, such as side-channel masking ('SecMasking') and the S-Box implementation ('SecSBoxImpl'), are controlled by top-level Verilog parameters. While the default values are secure, an SoC integrator can instantiate the module with insecure parameters (e.g., 'SecMasking = 0' or an unmasked 'SecSBoxImpl'). This allows for the creation of a cryptographically weak AES implementation by configuration, violating the principle of secure-by-default.",
+      "location": "aes_core.sv:13-15",
+      "code_snippet": "
+/*Line13*/:   parameter bit          AES192Enable         = 1,
+/*Line14*/:   parameter bit          SecMasking           = 1,
+/*Line15*/:   parameter sbox_impl_e  SecSBoxImpl          = SBoxImplDom,
+      ",
+      "impact": "An incorrect instantiation can completely nullify the hardware security countermeasures, making the AES core vulnerable to well-known side-channel and fault attacks. For example, using a standard LUT-based S-Box would make the core highly susceptible to power analysis, and disabling masking would expose the core to DPA.",
+      "trigger_condition": "An SoC integrator instantiates the AES IP with insecure parameter values. This could happen accidentally, due to a misunderstanding of the security implications, or to meet area/performance targets for a non-secure application which is then repurposed for a secure one.",
+      "recommendations": "For security-critical parameters like 'SecMasking' and 'SecSBoxImpl', remove the parameterization and hardcode the secure options. This ensures that all instantiations of the core are secure by construction. If configurability is essential, the insecure options should be removed from the main branch and maintained separately with prominent warnings."
+    },
+    {
+      "description": "The 'data_out_q' register, which holds the final ciphertext/plaintext, uses a complex conditional asynchronous reset: 'if (!rst_ni && data_out_we != SP2V_HIGH)'. The reset is contingent on the 'data_out_we' signal being low. This non-standard reset logic is fragile and harder to verify than a simple unconditional reset. A fault injection attack (e.g., a clock or voltage glitch) could cause 'data_out_we' to be high during a reset event, which would prevent the register from being cleared.",
+      "location": "aes_core.sv:872-878",
+      "code_snippet": "
+/*Line872*/:   always_ff @(posedge clk_i or negedge rst_ni) begin : data_out_reg
+/*Line873*/:     if (!rst_ni && data_out_we != SP2V_HIGH) begin
+/*Line874*/:       data_out_q <= '0;
+/*Line875*/:     end else if (data_out_we == SP2V_HIGH) begin
+/*Line876*/:       data_out_q <= data_out_d;
+/*Line877*/:     end
+/*Line878*/:   end
+      ",
+      "impact": "If the register fails to reset, it could retain sensitive data from a previous operation across a reset boundary. This stale data could then be read by software after the system comes out of reset, leading to information leakage of the last processed block.",
+      "trigger_condition": "A hardware fault or precisely timed glitch that causes the 'data_out_we' signal to have the 'SP2V_HIGH' encoding at the exact moment the asynchronous reset 'rst_ni' is asserted.",
+      "recommendations": "Simplify the reset logic to be unconditional and robust. The logic should be changed to a standard asynchronous reset structure: 'if (!rst_ni) { data_out_q <= '0; } else if (data_out_we == SP2V_HIGH) { ... }'. This removes the dependency on 'data_out_we' during the reset and ensures the register is always cleared reliably."
+    }
+  ]
+}
+```

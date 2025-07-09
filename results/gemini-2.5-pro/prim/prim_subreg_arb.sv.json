@@ -1,0 +1,22 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "In the `SwAccessRC` (Read-to-Clear) configuration, when `Mubi` is enabled and the data width `DW` is 16, the logic incorrectly uses the software write data `wd` to perform the clear operation. This is a copy-paste error from a different access mode (like W0C) and is inconsistent with the logic for other Mubi data widths (4, 8, 12) in the same `SwAccessRC` block, which correctly use a constant `false` value. The comment on line 165, `// Unused wd`, is also rendered incorrect by this bug.",
+      "location": "prim_subreg_arb.sv:156-158",
+      "code_snippet": "      end else if (DW == 16) begin : gen_mubi16\n        assign wr_data = prim_mubi_pkg::mubi16_and_hi(prim_mubi_pkg::mubi16_t'(de ? d : q),\n                                                      (we ? prim_mubi_pkg::mubi16_t'(wd) :\n                                                            prim_mubi_pkg::MuBi16True));\n",
+      "impact": "A software read to a 16-bit Mubi RC register will fail to clear the register as intended. Instead, the register's value will be bitwise ANDed with the data present on the `wd` bus. This can prevent critical status bits from being cleared, potentially leading to denial-of-service (e.g., an interrupt that never clears), incorrect system behavior based on stale status, or allowing an attacker to manipulate the register state by controlling `wd` during a read.",
+      "trigger_condition": "A software read operation (`we`=1) is performed on a register that instantiates this primitive with the parameters `SwAccess = SwAccessRC`, `Mubi = 1'b1`, and `DW = 16`.",
+      "recommendations": "Correct the logic for the 16-bit `SwAccessRC` Mubi case to match the other data widths. The term `prim_mubi_pkg::mubi16_t'(wd)` should be replaced with `prim_mubi_pkg::MuBi16False` to ensure the register is correctly cleared upon a read."
+    },
+    {
+      "description": "The arbitration logic for `SwAccessRC` (Read-to-Clear) registers creates a race condition where a hardware update can be lost. If a hardware write (`de`=1) occurs in the same clock cycle as a software read (`we`=1), the read-to-clear operation takes precedence, and the resulting `wr_data` becomes zero. The data from the hardware write (`d`) is completely ignored.",
+      "location": "prim_subreg_arb.sv:141-164",
+      "code_snippet": "    // non-mubi case\n    assign wr_data = (de ? d : q) & (we ? '0 : '1);\n\n    // mubi case (example for DW=4)\n    assign wr_data = prim_mubi_pkg::mubi4_and_hi(prim_mubi_pkg::mubi4_t'(de ? d : q),\n                                                 (we ? prim_mubi_pkg::MuBi4False :\n                                                       prim_mubi_pkg::MuBi4True));\n",
+      "impact": "Loss of critical hardware status information. If hardware logic attempts to set a status bit (e.g., 'error occurred', 'transaction complete') and software reads the register in the same cycle, the hardware update is silently dropped. This can cause the system to miss important hardware events, leading to deadlocks, failure to handle errors, or other unpredictable behavior.",
+      "trigger_condition": "A simultaneous hardware write (`de`=1) and software read (`we`=1) to a register configured with `SwAccess = SwAccessRC`. This is a timing-dependent condition that is more likely to occur in high-throughput scenarios.",
+      "recommendations": "The arbitration logic for `SwAccessRC` should be modified to prevent the loss of hardware updates. One option is to merge the updates, for example: `assign wr_data = (q | d) & (we ? '0' : '1');`. This would combine the existing register state with the new hardware data before applying the read-clear. The chosen behavior should be clearly documented, but the current implementation that silently drops hardware updates is unsafe."
+    }
+  ]
+}
+```

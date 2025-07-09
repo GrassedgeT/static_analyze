@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The `prim_sum_tree` instance `u_sum` calculates the sum of four 16-bit counters (`test_cnt`) but the output signal `test_cnt_sum` is also only 16 bits wide. The sum of four 16-bit numbers can require up to 18 bits (e.g., 4 * (2^16 - 1)). This creates a silent integer overflow condition where the sum wraps around if it exceeds 65535. The `prim_sum_tree` instantiation does not connect any overflow or error-indicating output, so this condition goes completely undetected.",
+      "location": "entropy_src_adaptp_ht.sv:103-113",
+      "code_snippet": "\nprim_sum_tree #(\n  .NumSrc(RngBusWidth),\n  .Width(RegWidth)\n) u_sum (\n  .clk_i       (clk_i),\n  .rst_ni      (rst_ni),\n  .values_i    (test_cnt),\n  .valid_i     ({RngBusWidth{1'b1}}),\n  .sum_value_o (test_cnt_sum),\n  .sum_valid_o ()\n);\n",
+      "impact": "When the module is configured to use the sum-based health check (`threshold_scope_i` is high), the check is performed on the potentially overflowed `test_cnt_sum`. A defective entropy source producing an extremely high number of '1's could cause the sum to overflow and wrap to a small value. This could cause the value to fall within the acceptable `[thresh_lo_i, thresh_hi_i]` window, leading the health test to incorrectly pass. This would allow low-quality, statistically biased entropy into the system, which undermines the security of all cryptographic operations that rely on it. This is a violation of the health test's core security guarantee.",
+      "trigger_condition": "This vulnerability is triggered under the following conditions: 1) The module is configured via control registers to use the sum-based health check mode (where `rng_bit_en_i` is low and `threshold_scope_i` is high). 2) The physical noise source provides entropy with a high density of '1's bits across all four lanes within a single test window, such that the sum of the individual '1' counters exceeds 65535.",
+      "recommendations": "The output width of the `prim_sum_tree` must be sufficient to hold the maximum possible sum. The signal `test_cnt_sum` should be widened to at least `RegWidth + $clog2(RngBusWidth)` bits (i.e., 16 + 2 = 18 bits). The `prim_sum_tree` primitive itself should be instantiated with the appropriate output width. All downstream logic that uses `test_cnt_sum` (specifically the multiplexer feeding `test_cnt_hi_o` and `test_cnt_lo_o`) must also be updated to handle this wider bus. Alternatively, if widening is not an option, the `u_sum` instance should be replaced with a saturating adder that clamps at the maximum 16-bit value and asserts an overflow error flag, which must be propagated to the module's error output to trigger a system alert."
+    }
+  ]
+}
+```

@@ -1,0 +1,26 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The package defines 'loose' comparison functions (`lc_tx_test_true_loose`, `lc_tx_test_false_loose`) for the 4-bit `lc_tx_t` security signals. These functions check for inequality with the opposite state (e.g., `!= Off` to mean 'On') rather than for equality with the expected state (e.g., `== On`). This creates a significant vulnerability to fault injection attacks. A glitch that flips a single bit in an `Off` signal (`4'b1010`) could create an intermediate, invalid state (e.g., `4'b1011`). This invalid state would be incorrectly interpreted as 'On' by the loose check, leading to a bypass of the security feature that the signal controls.",
+      "location": "lc_ctrl_pkg.sv:124-133",
+      "code_snippet": "
+// Test whether the multibit value signals an \"enabled\" condition.\n// The loose version of this function interprets all\n// values other than False as \"enabled\".\nfunction automatic logic lc_tx_test_true_loose(lc_tx_t val);\n  return Off != val;\nendfunction : lc_tx_test_true_loose\n\n// Test whether the multibit value signals a \"disabled\" condition.\n// The loose version of this function interprets all\n// values other than True as \"disabled\".\nfunction automatic logic lc_tx_test_false_loose(lc_tx_t val);\n  return On != val;\nendfunction : lc_tx_test_false_loose
+      ",
+      "impact": "An attacker could use a fault injection attack (e.g., voltage/clock glitching) to bypass critical security controls. For example, if a signal controlling JTAG access is evaluated with a loose check, an attacker could enable JTAG in a secure life cycle state (like PROD), leading to a full device compromise by allowing memory and register access.",
+      "trigger_condition": "A physical fault injection attack flips one or more bits of a security-critical `lc_tx_t` signal, and the consuming logic uses one of the `_loose` checking functions to evaluate the signal's state.",
+      "recommendations": "The use of `lc_tx_test_true_loose` and `lc_tx_test_false_loose` functions should be strictly forbidden in the design. A linting rule should be added to enforce this. All checks on `lc_tx_t` signals must use the strict comparison functions (`lc_tx_test_true_strict`, `lc_tx_test_false_strict`) which verify the signal is exactly equal to the expected `On` or `Off` value. This ensures that any glitched, invalid state is treated as an error condition rather than a valid state."
+    },
+    {
+      "description": "The package provides a custom `lc_tx_or` function for performing a logical OR on two `lc_tx_t` multi-bit signals. The code comments explicitly warn that this function is not hardened and can produce a strictly valid output (e.g., `On` or `Off`) from two invalid, non-complementary inputs. This behavior can 'launder' glitched signals, masking the fact that a fault has occurred and creating a valid but incorrect security state. This defeats the purpose of using multi-bit encoded signals for fault resilience.",
+      "location": "lc_ctrl_pkg.sv:147-164",
+      "code_snippet": "
+// Note: due to the nature of the lc_tx_or() function, it is possible that two\n// non-strictly \"act\" values may produce a strictly \"act\" value. If this is\n// of concern, e.g. if the output is consumed with a strict check on \"act\",\n// consider using the prim_lc_or_hardened primitive instead.\nfunction automatic lc_tx_t lc_tx_or(lc_tx_t a, lc_tx_t b, lc_tx_t act);\n  logic [TxWidth-1:0] a_in, b_in, act_in, out;\n  a_in = a;\n  b_in = b;\n  act_in = act;\n  for (int k = 0; k < TxWidth; k++) begin\n    if (act_in[k]) begin\n      out[k] = a_in[k] || b_in[k];\n    end else begin\n      out[k] = a_in[k] && b_in[k];\n    end\n  end\n  return lc_tx_t'(out);\nendfunction : lc_tx_or
+      ",
+      "impact": "If this function is used to combine multiple security-critical signals (e.g., multiple lock signals), an attacker could inject non-lethal faults into the input signals. The `lc_tx_or` function might then compute a valid `On` state from these faulty inputs, effectively bypassing the security measure that the multiple signals were intended to provide. This undermines the defense-in-depth provided by multi-bit encoded signals.",
+      "trigger_condition": "An attacker injects faults into two separate `lc_tx_t` signals that are inputs to the `lc_tx_or` function. The combination of these two faulty signals results in a valid but unintended output state (e.g., `On`) that is then consumed by downstream logic.",
+      "recommendations": "Replace all usages of the `lc_tx_or` function with a hardened primitive, such as `prim_lc_or_hardened` as suggested by the code comment. Hardened logic primitives are designed to propagate invalid or unknown states, ensuring that if any input is faulty, the output is also recognized as faulty and does not resolve to an incorrect valid state."
+    }
+  ]
+}
+```

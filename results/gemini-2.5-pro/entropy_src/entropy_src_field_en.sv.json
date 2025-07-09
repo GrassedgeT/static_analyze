@@ -1,0 +1,14 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The internal state register `field_q` is not fault-protected. The update logic requires that the incoming write data `wdata_i` corresponds to the bitwise inverse of the current state `field_q` to allow a state change. If a physical fault injection attack corrupts `field_q` to an intermediate value (neither the 'on' value `FieldEnVal` nor the 'off' value `~FieldEnVal`), the update condition `field_q == ~wdata_i` can never be met by a valid write operation. This creates a permanent lock-up condition, preventing the module's output from being toggled.",
+      "location": "entropy_src_field_en.sv:45-49",
+      "code_snippet": "\n  assign field_update = wvalid_i && (field_q == ~wdata_i) &&\n                        ((wdata_i == field_value) ||\n                         (wdata_i == field_value_invert));\n\n  assign field_d = field_update ? wdata_i : field_q;\n",
+      "impact": "Denial of Service. An attacker could use a fault injection attack (e.g., voltage glitching, rowhammer, laser fault injection) to corrupt the `field_q` register. If this module is used to control a critical enable signal, such as the main `MODULE_ENABLE` for the entropy source, this vulnerability would allow an attacker to permanently disable (or enable) the entropy source until the next hardware reset. This would constitute a system-wide denial of service for any functionality that relies on the TRNG.",
+      "trigger_condition": "A physical fault injection attack that successfully flips one or more bits in the `field_q` state register, causing it to hold a value that is not one of the two valid patterns (`FieldEnVal` or its inverse). Following the fault, any subsequent valid software write to toggle the state will be ignored.",
+      "recommendations": "To mitigate this vulnerability, the internal state register `field_q` should be hardened against fault attacks. A standard approach is to use a fault-detecting state encoding, such as storing the state and its inverse in two separate registers (e.g., `field_q` and `field_n_q`). The logic should then continuously check that `field_q == ~field_n_q`. If a mismatch is ever detected, it indicates a fault, and the module should raise a hardware alert and force itself into a safe, known state (e.g., disabled)."
+    }
+  ]
+}
+```

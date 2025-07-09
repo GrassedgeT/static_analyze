@@ -1,0 +1,78 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The integrity and consistency check logic contains a bypass condition that treats a blank (all-zero) digest as a successful check. If a partition is provisioned with data but its digest is never written, all subsequent integrity checks will automatically pass without verifying the data. This also prevents the hardware-enforced write-lock, which is predicated on a non-zero digest, from engaging. This effectively nullifies the integrity protection and write-once guarantee for any partition where the digest is not provisioned.",
+      "location": "otp_ctrl_part_buf.sv:547-558",
+      "code_snippet": "
+/*Line541*/:       IntegDigWaitSt: begin
+/*Line542*/:         scrmbl_mtx_req_o = 1'b1;
+/*Line543*/:         data_sel = ScrmblData;
+/*Line544*/:         if (scrmbl_valid_i) begin
+/*Line545*/:           // This is the only way the buffer regs can get unlocked.
+/*Line546*/:           // Note that we ignore this check if the digest is still blank.
+/*Line547*/:           if (digest_o == data_mux || digest_o == '0) begin
+/*Line548*/:             state_d = IdleSt;
+/*Line549*/:             // If the partition is still locked, this is the first integrity check after
+/*Line550*/:             // initialization. This is the only way the buffer regs can get unlocked.
+/*Line551*/:             if (mubi8_test_true_strict(dout_locked_q)) begin
+/*Line552*/:               dout_locked_d = MuBi8False;
+/*Line553*/:             // Otherwise, this integrity check has requested by the LFSR timer, and we have
+/*Line554*/:             // to acknowledge its completion.
+/*Line555*/:             end else begin
+/*Line556*/:               integ_chk_ack_o = 1'b1;
+/*Line557*/:             end
+/*Line558*/:           // Error out and lock the partition if this check fails.
+/*Line559*/:           end else begin
+/*Line560*/:             state_d = ErrorSt;
+/*Line561*/:             error_d = CheckFailError;
+/*Line562*/:             // The check has finished and found an error.
+/*Line563*/:             integ_chk_ack_o = 1'b1;
+/*Line564*/:           end
+/*Line565*/:         end
+/*Line566*/:       end
+      ",
+      "impact": "Allows for a complete bypass of the hardware digest verification and the associated write-lock mechanism. An attacker with write access to an OTP partition could write malicious data, and if the digest is left as zero, the system would not detect the integrity violation. The partition would also remain writable, defeating its 'write-once' security property.",
+      "trigger_condition": "A device is provisioned with data in a partition that requires integrity protection, but its corresponding digest field is intentionally or accidentally left as all zeros.",
+      "recommendations": "Remove the `|| digest_o == '0'` condition from the check. The comparison should strictly be `digest_o == data_mux`. If a digest value of all zeros is a valid state for an unprovisioned partition, the FSM should handle this case explicitly by not unlocking the partition (i.e., `dout_locked_d` should not be set to `MuBi8False`) until a valid, non-zero digest is computed and verified."
+    },
+    {
+      "description": "The FSM's terminal `ErrorSt` immediately acknowledges any incoming integrity or consistency check requests. This behavior is incorrect because the partition is in a non-operational, locked state and cannot perform the requested check. This provides misleading feedback to the supervisory logic that requested the check.",
+      "location": "otp_ctrl_part_buf.sv:571-580",
+      "code_snippet": "
+/*Line571*/:       ErrorSt: begin
+/*Line572*/:         dout_locked_d = MuBi8True;
+/*Line573*/:         if (error_q == NoError) begin
+/*Line574*/:           error_d = FsmStateError;
+/*Line575*/:         end
+/*Line576*/:         // If we are in error state, we cannot execute the checks anymore.
+/*Line577*/:         // Hence the acknowledgements are returned immediately.
+/*Line578*/:         cnsty_chk_ack_o = 1'b1;
+/*Line579*/:         integ_chk_ack_o = 1'b1;
+/*Line580*/:       end
+      ",
+      "impact": "This flaw provides false assurance to the supervisory logic (e.g., the LFSR timer) that requested the check. The requester receives an acknowledgement and assumes the request was serviced, preventing it from timing out. This masks the fact that the partition is non-functional and prevents the system from detecting and escalating a critical failure where a security check is no longer being performed.",
+      "trigger_condition": "Any event that drives the partition FSM into `ErrorSt`, such as an uncorrectable OTP error, an ECC error in the buffer, or a fault injection attack. A subsequent check request from the timer logic will then trigger the flawed acknowledgement.",
+      "recommendations": "In the `ErrorSt`, the `cnsty_chk_ack_o` and `integ_chk_ack_o` outputs should be held low (`1'b0`). This will cause the requesting agent (e.g., the LFSR timer) to time out, which is the correct behavior for an unresponsive module. The timeout can then be used to trigger a proper system-level alert or error-handling routine."
+    },
+    {
+      "description": "A bypass for the consistency check is controlled by the `check_byp_en_i` signal, which is intended for use only on non-secret, non-digested partitions. However, this critical security policy is only enforced by non-synthesizable `ASSERT` statements. If a fault in an upstream module or a glitching attack asserts `check_byp_en_i` for a secret partition, the consistency check will be silently bypassed in the final silicon, as assertions are not converted to hardware gates.",
+      "location": "otp_ctrl_part_buf.sv:381-382 and otp_ctrl_part_buf.sv:107-108",
+      "code_snippet": "
+// In CnstyReadWaitSt state, the bypass is used:
+/*Line381*/:               if (scrmbl_data_o == data_mux ||
+/*Line382*/:                   lc_ctrl_pkg::lc_tx_test_true_strict(check_byp_en_i)) begin
+
+// In module header, the check is a non-synthesized assertion:
+/*Line105*/:   // This feature is only supposed to be used with partitions that are not scrambled
+/*Line106*/:   // and that do not have a digest.
+/*Line107*/:   `ASSERT(BypassEnable0_A, Info.secret    |-> lc_ctrl_pkg::lc_tx_test_false_strict(check_byp_en_i))
+/*Line108*/:   `ASSERT(BypassEnable1_A, Info.hw_digest |-> lc_ctrl_pkg::lc_tx_test_false_strict(check_byp_en_i))
+      ",
+      "impact": "This vulnerability allows for a complete bypass of the data consistency check for any partition, including those containing secret keys or critical configuration. This would allow the physical OTP content to be maliciously altered without detection, as the check that compares the OTP content against the trusted internal buffer would be disabled.",
+      "trigger_condition": "A fault or vulnerability in the life cycle controller logic causes it to erroneously assert `check_byp_en_i` for a secret or digest-protected partition, or a targeted fault injection attack on the `check_byp_en_i` signal itself.",
+      "recommendations": "The security policy must be enforced in synthesizable hardware. The bypass condition should be changed to explicitly check the partition parameters in hardware. For example: `... || (lc_ctrl_pkg::lc_tx_test_true_strict(check_byp_en_i) && !Info.secret && !Info.hw_digest)`. This ensures the bypass is only effective for partitions that are explicitly configured as non-secret and non-digested, regardless of the state of the `check_byp_en_i` input."
+    }
+  ]
+}
+```

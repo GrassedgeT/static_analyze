@@ -1,0 +1,46 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The write-enable logic for critical configuration registers, `es_hw_regwen`, is controlled by a software-writable register `reg2hw.sw_regupd.q`. There is no hardware-enforced, one-time lock mechanism. This allows software with sufficient privileges to disable the module, modify sensitive settings (such as FIPS mode, data routing, or health test thresholds), and then re-enable the module at any time. This fundamentally undermines the security guarantees of the hardware, as security features can be disabled long after the secure boot phase.",
+      "location": "entropy_src_core.sv:557-559",
+      "code_snippet": "\n// Allow writes only if\n// 1. SW_REGUPD is true,\n// 2. The DUT is disabled\n//   Block writes if enabled or if internal activities are still in progress (as indicated by\n//   es_delayed_enable).\nassign es_hw_regwen = reg2hw.sw_regupd.q &&\n                      mubi4_test_false_loose(mubi_module_en_raw_fanout[0]) &&\n                      !es_delayed_enable;\n",
+      "impact": "An attacker with register write access can bypass all of the module's security features by re-enabling register writes at runtime. This can lead to entropy leakage, use of weakened or non-compliant entropy, or a complete denial-of-service.",
+      "trigger_condition": "A compromised software entity with access to the entropy_src registers writes to `SW_REGUPD` to enable updates, then to `MODULE_ENABLE` to disable the core, changes a critical configuration register, and finally re-enables the core.",
+      "recommendations": "Implement a hardware-based register lock mechanism. A dedicated, one-way `LOCK` register should be added. Once trusted software writes to this register after initial configuration, the `es_hw_regwen` signal should be permanently forced to '0' until the next hardware reset, preventing any further modification of critical configuration registers."
+    },
+    {
+      "description": "The module allows routing of the final conditioned entropy to a software-readable register (`ENTROPY_DATA`) based on the `es_route_to_sw` signal. This signal is derived directly from the `ENTROPY_CONTROL.es_route` register field, which is a software-writable register. While access to read the `ENTROPY_DATA` register is gated by an OTP fuse, the ability to *reroute* the data from the hardware path (e.g., to CSRNG) to the software path is not protected by a similar hardware lock.",
+      "location": "entropy_src_core.sv:1526, 2967-2968",
+      "code_snippet": "\nassign es_route_to_sw = es_route_pfe;\n...\nassign sfifo_esfinal_pop = es_route_to_sw ? swread_done : es_hw_if_fifo_pop;\nassign {esfinal_fips_flag,esfinal_data} = sfifo_esfinal_rdata;\n",
+      "impact": "Critical entropy intended for a secure hardware-only path (like CSRNG) can be maliciously rerouted and exposed to software, leading to a direct leak of cryptographic material. This compromises the confidentiality of all cryptographic operations that rely on this entropy.",
+      "trigger_condition": "An attacker gains write access to the `ENTROPY_CONTROL` register (made possible by the lack of a hardware register lock) and sets the `es_route` bit. This diverts the entropy stream to the software-readable path.",
+      "recommendations": "The `ENTROPY_CONTROL` register should be protected by the recommended hardware register lock. The decision to route entropy to software should be a boot-time configuration that is locked before any untrusted software executes. Runtime changes to this critical data path should not be permitted."
+    },
+    {
+      "description": "The SHA-3 conditioner, a primary security feature, can be completely bypassed based on the state of software-configurable registers. The `es_bypass_mode` signal, which controls a multiplexer selecting between conditioned and unconditioned entropy, is true if FIPS mode is disabled or if both `es_bypass_to_sw` and `es_route_to_sw` are enabled. All of these controlling signals originate from software-writable registers (`CONF` and `ENTROPY_CONTROL`).",
+      "location": "entropy_src_core.sv:1552-1553",
+      "code_snippet": "\nassign es_bypass_mode = (!fips_enable_pfe) || (es_bypass_to_sw && es_route_to_sw);\n",
+      "impact": "An attacker can force the system to use unconditioned (though health-tested) entropy. This significantly reduces the cryptographic strength of the random data, making it more susceptible to prediction or influence if the physical noise source has subtle, non-ideal characteristics that the health tests do not detect. This constitutes a violation of CWE-1241.",
+      "trigger_condition": "An attacker with register write access modifies the `CONF` or `ENTROPY_CONTROL` registers to disable `fips_enable` or to enable the `es_bypass_to_sw` and `es_route_to_sw` combination.",
+      "recommendations": "The FIPS mode and conditioner bypass settings should be locked by a hardware register lock after secure boot. The system should be designed to operate in a single, secure mode (e.g., FIPS mode enabled) during normal operation. Bypass modes should be restricted to authenticated debug scenarios and not be configurable by general-purpose software at runtime."
+    },
+    {
+      "description": "The firmware override feature allows software to inject data directly into the entropy pipeline, either before or after the health tests, completely bypassing the physical noise source. While this feature is gated by an OTP fuse (`otp_en_entropy_src_fw_over_i`), if this fuse is enabled on a production device, it creates a powerful backdoor. An attacker with software control could inject a known, deterministic seed, rendering the entire system's cryptographic functions predictable.",
+      "location": "entropy_src_core.sv:782-783, 2665-2666",
+      "code_snippet": "\n// firmware override controls\nassign fw_ov_mode = efuse_es_sw_ov_en && fw_ov_mode_pfe;\nassign fw_ov_mode_entropy_insert = fw_ov_mode && fw_ov_entropy_insert_pfe;\n...\nassign pfifo_precon_wdata = fw_ov_mode_entropy_insert ? fw_ov_wr_data :\n                              sfifo_distr_rdata;\n",
+      "impact": "Catastrophic failure of randomness. If the controlling OTP fuse is enabled in production, an attacker can inject a known seed, making all subsequent cryptographic keys, nonces, and random numbers completely predictable. This leads to a total compromise of the system's security.",
+      "trigger_condition": "An attacker gains software control on a device where the `otp_en_entropy_src_fw_over_i` fuse is enabled. They then write to the `FW_OV_CONTROL` and `FW_OV_WR_DATA` registers to inject malicious data.",
+      "recommendations": "The OTP fuse (`otp_en_entropy_src_fw_over_i`) that enables this feature must be permanently disabled on all production silicon. This feature should only be available on specific development or test chips. The security documentation must explicitly state the critical importance of disabling this fuse for production parts."
+    },
+    {
+      "description": "A disable/enable cycle of the module without a full hardware reset does not explicitly reset the internal state of the `sha3` conditioner instance. The design relies on command-level controls (`sha3_start`, `sha3_process`) from the main FSM and complex masking logic (`sha3_flush_q`, `sha3_start_mask_q`) to manage the conditioner's state. This is less robust than a direct hardware reset and could potentially lead to state-carryover attacks, where residual data in the SHA-3 sponge from a previous operation is combined with new data, violating the integrity of the conditioning process.",
+      "location": "entropy_src_core.sv:2732-2734",
+      "code_snippet": "\n// SHA3 hashing engine\nsha3 #(\n  .EnMasking (Sha3EnMasking)\n) u_sha3 (\n  .clk_i,\n  .rst_ni, // This is only tied to the top-level reset, not a module-level reset on re-enable.\n  ...\n);\n",
+      "impact": "Potential for weakened entropy due to unintended state-carryover in the SHA-3 conditioner. An attacker could attempt to influence the conditioned output by manipulating the module's enable signal to mix old and new data, potentially reducing the unpredictability of the output.",
+      "trigger_condition": "A software attacker rapidly toggles the `MODULE_ENABLE` register, causing the module to be disabled and re-enabled without a full `rst_ni` pulse. This could leave the `u_sha3` instance in an intermediate state when the new operation begins.",
+      "recommendations": "The `sha3` conditioner and its associated data FIFOs (`pfifo_precon`, `pfifo_bypass`) should be explicitly reset not only by `rst_ni` but also by a pulse generated upon module re-enable (e.g., `module_en_pulse_fo`). This ensures that every entropy generation sequence starts with the conditioner in a clean, known-good state, eliminating the possibility of state-carryover."
+    }
+  ]
+}
+```

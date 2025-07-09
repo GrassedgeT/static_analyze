@@ -1,0 +1,63 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The DMI-to-TLUL adapter for the JTAG access path does not generate bus integrity bits for write transactions. The `wdata_intg_i` input is hardcoded to zero, which means that fault injection attacks on JTAG-initiated writes to critical life cycle registers go undetected. This is a critical weakness, as the main system bus interface is protected by this mechanism, but the privileged JTAG debug path is not.",
+      "location": "lc_ctrl.sv:250",
+      "code_snippet": "
+/*Line239*/:   tlul_adapter_host #(
+/*Line240*/:     .EnableDataIntgGen(1)
+/*Line241*/:   ) u_tap_tlul_host (
+/*Line242*/:     .clk_i,
+/*Line243*/:     .rst_ni,
+/*Line244*/:     // do not make a request unless there is room for the response
+/*Line245*/:     .req_i        ( dmi_req_valid & dmi_resp_ready         ),
+/*Line246*/:     .gnt_o        ( dmi_req_ready                          ),
+/*Line247*/:     .addr_i       ( top_pkg::TL_AW'({dmi_req.addr, 2'b00}) ),
+/*Line248*/:     .we_i         ( dmi_req.op == dm::DTM_WRITE            ),
+/*Line249*/:     .wdata_i      ( dmi_req.data                           ),
+/*Line250*/:     .wdata_intg_i ('0                                      ),
+/*Line251*/:     .be_i         ( {top_pkg::TL_DBW{1'b1}}                ),
+/*Line252*/:     .instr_type_i ( prim_mubi_pkg::MuBi4False              ),
+/*Line253*/:     .valid_o      ( dmi_resp_valid                         ),
+/*Line254*/:     .rdata_o      ( dmi_resp.data                          ),
+/*Line255*/:     .rdata_intg_o (                                        ),
+/*Line256*/:     .err_o        (                                        ),
+/*Line257*/:     .intg_err_o   (                                        ),
+/*Line258*/:     .tl_o         ( tap_tl_h2d                             ),
+/*Line259*/:     .tl_i         ( tap_tl_d2h                             )
+/*Line260*/:   );
+      ",
+      "impact": "An attacker with physical access and JTAG enabled (e.g., in DEV or TEST_UNLOCKED state) can use fault injection (e.g., voltage glitching, EMFI) to corrupt writes to critical registers like TRANSITION_TARGET or TRANSITION_TOKEN. A successful bit-flip could lead to an unauthorized state transition or bypass token authentication, resulting in a full security compromise.",
+      "trigger_condition": "An attacker with JTAG access initiates a write to a life cycle register. Simultaneously, they apply a physical fault injection attack targeting the data bus between the JTAG DMI adapter and the life cycle register file.",
+      "recommendations": "The JTAG access path must have the same level of protection as the primary CPU bus path. The `tlul_adapter_host` should be configured to generate integrity bits for write data, and this value should be connected to the `wdata_intg_i` input. The `u_reg_tap` register file instance should then be configured to validate the integrity of incoming writes."
+    },
+    {
+      "description": "A portion of the secret transition token (`transition_token_q`) is directly and unconditionally assigned to the `lc_flash_rma_seed_o` output. This broadcasts part of the secret RMA unlock token to other modules on the chip before the token has been cryptographically validated by the life cycle FSM. This constitutes a premature information leak.",
+      "location": "lc_ctrl.sv:538",
+      "code_snippet": "
+/*Line510*/:       transition_token_q        <= transition_token_d;
+...
+/*Line538*/:   assign lc_flash_rma_seed_o = transition_token_q[RmaSeedWidth-1:0];
+      ",
+      "impact": "Information disclosure of a critical secret. An attacker who can monitor the `lc_flash_rma_seed_o` signals (e.g., through physical probing or a software bug in a connected module) can learn a portion of the secret RMA token. This significantly reduces the complexity of brute-forcing the full token to perform an unauthorized RMA transition.",
+      "trigger_condition": "An attacker in a state that permits an RMA transition (e.g., PROD) writes a guessed token value to the `TRANSITION_TOKEN` registers via the bus or JTAG. The `lc_flash_rma_seed_o` output will immediately reflect a portion of this guessed token. The transition does not need to be initiated with `TRANSITION_CMD` for the leak to occur.",
+      "recommendations": "The RMA seed should not be exposed until the FSM has fully validated the RMA token and has committed to the RMA transition flow. The seed value should be stored in an internal FSM register and only driven to the `lc_flash_rma_seed_o` output concurrently with the assertion of the `lc_flash_rma_req_o` signal."
+    },
+    {
+      "description": "When the debug feature `SecVolatileRawUnlockEn` is enabled, the logic for clearing the sticky `transition_successful` status bit is flawed. A success status from a previous volatile unlock can persist through a subsequent, potentially failing, real transition, because the clear condition is gated by `!volatile_raw_unlock_q`. This can mislead software about the true state of the device.",
+      "location": "lc_ctrl.sv:491-495",
+      "code_snippet": "
+/*Line491*/:       if (SecVolatileRawUnlockEn && transition_cmd && !volatile_raw_unlock_q) begin
+/*Line492*/:         trans_success_q <= 1'b0;
+/*Line493*/:       end else begin
+/*Line494*/:         trans_success_q <= trans_success_d | trans_success_q;
+/*Line495*/:       end
+      ",
+      "impact": "Software can be misled into believing a critical life cycle transition was successful when it actually failed. This could cause it to perform insecure operations, such as attempting to use features that should have been enabled by the failed transition, leading to unpredictable behavior or security vulnerabilities.",
+      "trigger_condition": "This vulnerability requires `SecVolatileRawUnlockEn` to be enabled. An attacker performs a valid volatile unlock, which sets `trans_success_q` to 1. They then command a new, real transition that is designed to fail. The `trans_success_q` bit is not cleared at the start of this new transition and remains 1 even after the failure, misleading any software that polls the status.",
+      "recommendations": "The logic for clearing sticky status bits should be straightforward. The `trans_success_q` bit should be cleared unconditionally whenever a new transition is commanded via `transition_cmd`. This ensures that its state always reflects the outcome of the most recent transition attempt, not a previous one."
+    }
+  ]
+}
+```

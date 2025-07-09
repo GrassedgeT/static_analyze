@@ -1,0 +1,45 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The `otp_vendor_test_ctrl` register, which likely controls security-sensitive OTP (One-Time Programmable) memory test modes, is protected by the same `transition_regwen` signal that enables writes to standard life cycle transition registers. This coarse-grained access control allows any user authorized to perform a state transition to also modify this sensitive test register, creating a potential backdoor.",
+      "location": "lc_ctrl_reg_top.sv:719-720",
+      "code_snippet": "
+  // Create REGWEN-gated WE signal
+  logic otp_vendor_test_ctrl_gated_we;
+  assign otp_vendor_test_ctrl_gated_we = otp_vendor_test_ctrl_we & transition_regwen_qs;
+",
+      "impact": "Privilege Escalation. An attacker with permission to initiate a normal life cycle transition (e.g., DEV to PROD) could abuse this flaw to simultaneously write to `otp_vendor_test_ctrl`. This could enable privileged OTP test modes, potentially allowing the attacker to read secret keys or device identity information from OTP, or to write to locked OTP partitions, fundamentally breaking the life cycle security model.",
+      "trigger_condition": "An attacker with software execution privileges would first claim the transition interface, causing the hardware to assert `transition_regwen_qs`. During the window where this signal is active, the attacker would issue a write to the `otp_vendor_test_ctrl` register address (`0x30`) to enable a potentially insecure test mode.",
+      "recommendations": "Access to `otp_vendor_test_ctrl` should be governed by a separate and more restrictive access control policy. It should not be tied to the general `transition_regwen` signal. For instance, writes to this register should only be permitted when the device is in a specific life cycle state (e.g., `TEST_UNLOCKED`), and this state-based check should be enforced in hardware, independent of the transition locking mechanism."
+    },
+    {
+      "description": "The `TRANSITION_TOKEN` registers are documented as Write-Only (WO) but are implemented as readable registers. The RTL includes a read path from the registers to the TL-UL bus, and a write path from the core hardware logic (`hw2reg`) to the registers. This allows software to read back values that the hardware may have written.",
+      "location": "lc_ctrl_reg_top.sv:603-615, 1379-1381",
+      "code_snippet": "
+// Register instantiation shows HW write path (.d) and SW read path (.qs)
+prim_subreg_ext #(
+  .DW    (32)
+) u_transition_token_0 (
+  .re     (transition_token_0_re),         // Read enable is active
+  .we     (transition_token_0_gated_we),
+  .wd     (transition_token_0_wd),
+  .d      (hw2reg.transition_token[0].d),  // HW can write to register
+  .q      (reg2hw.transition_token[0].q),
+  .qs     (transition_token_0_qs)          // Value is readable by SW
+);
+
+// Read mux logic confirms readback
+// ...
+    addr_hit[7]: begin
+      reg_rdata_next[31:0] = transition_token_0_qs;
+    end
+// ...
+",
+      "impact": "Information Disclosure. If the core hardware FSM ever writes sensitive data (e.g., a secret token from OTP for comparison, a partial hash result, or a derived key) into the `TRANSITION_TOKEN` registers via the `hw2reg` interface, that data can be read back by software. This could leak critical secrets and compromise the token-based authentication mechanism for life cycle transitions.",
+      "trigger_condition": "An attacker with software execution privileges initiates an operation (e.g., a state transition) that causes the internal hardware to temporarily store sensitive data in the `TRANSITION_TOKEN` registers. The attacker then performs a read from the `TRANSITION_TOKEN` register addresses (`0x1c` - `0x28`) to leak the secret data.",
+      "recommendations": "The `TRANSITION_TOKEN` registers must be made truly write-only from the software's perspective. The read path should be disabled. Since the code is auto-generated, the register description file (e.g., `.hjson`) should be modified to specify the register's software access as strictly `wo`. This would generate RTL where the read data path is disabled, and reads to these addresses would return a constant value like zero."
+    }
+  ]
+}
+```

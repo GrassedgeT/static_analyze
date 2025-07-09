@@ -1,0 +1,30 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The FSM contains a 'volatile raw unlock' feature, enabled by the `SecVolatileRawUnlockEn` parameter. When active, it allows a transition from the RAW to the TEST_UNLOCKED state by comparing the user-supplied token (`unhashed_token_i`) directly against a hardcoded constant (`RndCnstRawUnlockTokenHashed`), completely bypassing the KMAC hardware hashing unit. This constitutes a backdoor authentication mechanism.",
+      "location": "lc_ctrl_fsm.sv:293-301",
+      "code_snippet": "        end else if (SecVolatileRawUnlockEn && volatile_raw_unlock_i && trans_cmd_i) begin\n          // We only allow transitions from RAW -> TEST_UNLOCKED0\n          if (lc_state_q == LcStRaw &&\n              trans_target_i == {DecLcStateNumRep{DecLcStTestUnlocked0}} &&\n              !trans_invalid_error_o) begin\n            // 128bit token check (without passing it through the KMAC)\n            if (unhashed_token_i == RndCnstRawUnlockTokenHashed) begin\n              // We stay in Idle, but update the life cycle state register (volatile).\n              lc_state_d = LcStTestUnlocked0;",
+      "impact": "If `SecVolatileRawUnlockEn` is incorrectly set to '1' in a production device, an attacker who obtains the value of `RndCnstRawUnlockTokenHashed` (e.g., through netlist reverse engineering) can bypass the primary KMAC-based authentication. This would allow them to transition the device into a less secure TEST_UNLOCKED state, likely granting debug access (JTAG) and the ability to extract secrets or compromise the device.",
+      "trigger_condition": "An attacker needs to (1) have access to a device where `SecVolatileRawUnlockEn` was enabled during synthesis, (2) discover the hardcoded `RndCnstRawUnlockTokenHashed` value, and (3) have software-level access to write to the `TRANSITION_TOKEN`, `TRANSITION_TARGET`, and `TRANSITION_CMD` registers and set the `volatile_raw_unlock` bit.",
+      "recommendations": "Ensure that build and release procedures for production silicon have strict, automated checks to guarantee that `SecVolatileRawUnlockEn` is always set to '0'. For stronger security, use `ifdef SecVolatileRawUnlockEn` directives to completely remove this debug code from the synthesis path for production builds, rather than relying on a parameter which could be accidentally misconfigured."
+    },
+    {
+      "description": "The authentication mechanism for life cycle transitions relies on comparing a 128-bit KMAC hash of a user-provided token against an expected value. However, the hardware comparison logic only checks the lower 32 bits of the 128-bit hash, ignoring the upper 96 bits.",
+      "location": "lc_ctrl_fsm.sv:454-456",
+      "code_snippet": "          if (hashed_token_i[31:0]  == hashed_token_mux[31:0]  &&\n              !token_hash_err_i &&\n              &hashed_token_valid_mux) begin",
+      "impact": "This flaw drastically reduces the security of token-based authentication from 128-bit strength to 32-bit strength (CWE-328: Use of Weak Hash). An attacker can brute-force a valid token with a significantly reduced effort (2^32 attempts instead of 2^128). A successful brute-force attack would allow an unauthorized user to perform a privileged life cycle transition, such as moving to TEST_UNLOCKED or RMA, without knowing the secret token.",
+      "trigger_condition": "An attacker needs software-level access to the life cycle controller registers to repeatedly initiate transition attempts with different tokens until a 32-bit collision is found. The time required would be feasible for a determined attacker.",
+      "recommendations": "The comparison must be performed on the full width of the token hash. The Verilog code in all token check states (`TokenHashSt`, `TokenCheck0St`, `TokenCheck1St`) should be changed to compare the entire 128-bit vectors. For example, change `hashed_token_i[31:0] == hashed_token_mux[31:0]` to `hashed_token_i == hashed_token_mux`."
+    },
+    {
+      "description": "The FSM logic in the `IdleSt` state permits a request to switch the system clock to an external source even when the device is in the secure `LcStProd` (Production) life cycle state. This is controlled by the `use_ext_clock_i` signal, which is typically controlled via software-accessible registers.",
+      "location": "lc_ctrl_fsm.sv:333-355",
+      "code_snippet": "        if (lc_state_q inside {LcStRaw,\n                               LcStTestLocked0,\n                               ...\n			       LcStDev,\n			       LcStProd,\n                               LcStRma}) begin\n          if (use_ext_clock_i) begin\n            lc_clk_byp_req = On;\n          end\n        end",
+      "impact": "Allowing an external actor to control the system clock in a production state is a severe vulnerability (CWE-1256). It can facilitate a wide range of physical attacks, including clock glitching to bypass security checks or corrupt FSM state, and precise timing control for advanced side-channel attacks to extract cryptographic keys or other sensitive data.",
+      "trigger_condition": "An attacker needs to be able to assert the `use_ext_clock_i` signal (likely via a register write) and provide an external clock source to the chip when the device is in the `LcStProd` state.",
+      "recommendations": "The ability to switch to an external clock must be strictly forbidden in secure life cycle states. Remove `LcStProd` and `LcStDev` from the list of states in the `inside` operator. The `NoClkBypInProdStates_A` assertion at line 858, which correctly flags this as an error, should be used to formally verify the fix."
+    }
+  ]
+}
+```
