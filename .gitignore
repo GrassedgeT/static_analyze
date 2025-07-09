@@ -80,7 +80,7 @@ venv.bak/
 *.swo
 .DS_Store
 
-results/
+
 
 # rag storage
 storage/
