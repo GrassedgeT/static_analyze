@@ -84,7 +84,7 @@ else:
 
 # %%
 from langchain import tools
-@tools.tool("get_svfiles_path")
+# @tools.tool("get_svfiles_path")
 def get_svfiles_path(module_name: str) -> dict[str, str]:
     """
     Get the sv files' path of the specified module.
@@ -109,7 +109,7 @@ def get_svfiles_path(module_name: str) -> dict[str, str]:
 # get_svfiles_path("top_earlgrey_pinmux")
 
 # %%
-@tools.tool("get_module_list")
+# @tools.tool("get_module_list")
 def get_module_src(module_name: str) -> str:
     """
     Get the source path of the specified module.
@@ -124,7 +124,7 @@ def get_module_src(module_name: str) -> str:
         raise ValueError(f"Module {module_name} not found in the module list.")
     
     return module_dict[module_name]
-get_module_src("hmac")
+# get_module_src("hmac")
 
 # %%
 def add_line_numbers(content: str) -> str:
@@ -147,7 +147,7 @@ def add_line_numbers(content: str) -> str:
             marked_lines.append(f"/*Line{i}*/:")
     return '\n'.join(marked_lines)
 
-@tools.tool("read_sv_file")
+# @tools.tool("read_sv_file")
 def read_sv_file(file_path: str) -> str:
     """
     Read the content of a SystemVerilog file with line number.
