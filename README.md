@@ -4,15 +4,15 @@
 This tool leverages advanced llms to construct agents, integrating powerful AST parsing and  RAG capabilities. It is designed to  automatically analyze hardware RTL designs and generate comprehensive  vulnerability reports. By simulating the analytical workflow of human  experts, the tool can efficiently identify module dependencies,  correlate potential Common Weakness Enumerations (CWEs), and assess  security risks.
 
 # Basic Workflow
-![workflow](storage/images/static_analyze.png)
+![workflow](data/images/static_analyze.png)
 
 ## AST parse and Dependencies analyze
 The syntax tree is parsed using Google's Verible library and its `syntax` tool, which converts SystemVerilog code into syntax tree data. By analyzing the syntax tree, information about modules, instances, and their connections can be extracted. Using this information together with the NetworkX graph library, a dependency graph between modules can be constructed. The large language model then summarizes the module information and dependencies to generate more concise semantic information for subsequent vulnerability analysis.
  
 modules and instances info:
-![modules and instances info](storage/images/ast.png)
+![modules and instances info](data/images/ast.png)
 dependencies graph:
-![dependencis](storage/images/dependencies.png)
+![dependencis](data/images/dependencies.png)
 ## RAG
 The RAG database contains the official design documentation of the Opentitan SoC and authoritative hardware CWE data. Such as：
 * README File
