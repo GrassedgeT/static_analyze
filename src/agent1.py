@@ -147,7 +147,7 @@ Your task workflow is as follows:
 4.Identify Potential CWEs:
   Based on all the above information (documentation, syntax tree, dependencies), identify Common Weakness Enumeration (CWE) entries that may apply to this hardware module.
   Use the `cwe_retriver` tool to query for relevant CWE numbers and descriptions based on the attack surfaces (e.g., register interfaces, bus interactions) and functions (e.g., FSMs, cryptographic operations) you have identified. For example, you can query "CWE for improper hardware state machine management" or "CWE related to insecure register access control".
-5.Generate Final JSON Output:** Consolidate all analysis results into a structured JSON object.
+5.Generate Final JSON Output: Consolidate all analysis results into a structured JSON object.
   All information in the output must have clear sources and evidence, ensuring that every conclusion can be traced back to specific documentation or code analysis results. Nothing should be fabricated.
   You must adhere to the following JSON output structure:
 {{
@@ -231,7 +231,7 @@ Your task workflow is as follows:
     }}
   ]
 }}
-All of your output must be a single, complete, and correctly formatted JSON object. Do not include any explanatory text, comments, Markdown tags, or any characters outside the JSON object.
+All of your output must start with '{{' end with '}}', must be a single, complete, and correctly formatted JSON object. Do not include any explanatory text, comments, Markdown tags, or any characters outside the JSON object.
 """
 hw_security_prompt = ChatPromptTemplate.from_messages(
     [

@@ -1,0 +1,10 @@
+[
+  {
+    "description": "The configuration lock (`cfg_block`) can be bypassed via fault injection. The flip-flop storing `cfg_block` is reset to '0' by the asynchronous active-low reset (`rst_ni`). A precisely timed glitch on the reset line during an active hash operation could clear the lock, allowing an attacker to modify critical configuration registers (e.g., `hmac_en`, `digest_size`) or the secret key while the core is processing sensitive data.",
+    "location": "hmac.sv:354-362, 207-208",
+    "code_snippet": "always_ff @(posedge clk_i or negedge rst_ni) begin\n  if (!rst_ni) begin\n    cfg_block <= '0';\n  end else if (hash_start_or_continue) begin\n    cfg_block <= 1'b 1;\n  end else if (reg_hash_done || reg_hash_stop) begin\n    cfg_block <= 1'b 0;\n  end\nend\n\n// Key update is gated by cfg_block\n... else if (!cfg_block) begin\n  // Allow updating secret key only when the engine is in Idle.\n  ...",
+    "impact": "Successful exploitation could lead to the leakage of intermediate hash values, corruption of the final digest, or the use of a modified key mid-operation. This compromises the integrity and confidentiality of the cryptographic operation.",
+    "trigger_condition": "A physical fault injection attack (e.g., voltage or clock glitching) that momentarily asserts the `rst_ni` signal while the HMAC engine is active (`cfg_block` is '1').",
+    "recommendations": "Enhance the robustness of the `cfg_block` control logic against fault injection. Use redundant, fault-tolerant flip-flops for critical state bits. The reset logic should also be hardened, for instance, by requiring the reset to be active for multiple clock cycles before taking effect, or by ensuring the reset only clears state when the core is confirmed to be idle."
+  }
+]

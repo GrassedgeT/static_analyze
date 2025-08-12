@@ -1,9 +1,11 @@
 # %%
+import json
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_deepseek import ChatDeepSeek
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import SystemMessage
+from langchain_core.output_parsers import JsonOutputParser
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from file_tools import read_sv_file, get_svfiles_path
 import os
@@ -21,23 +23,8 @@ Core Logic & Functional Bugs
 State & Configuration Management Flaws
 Cryptographic Weaknesses
 Incorrect signal logic, such as mistakenly hardcoding signals that require dynamic updates as constant values
+Sensitive register data not cleared after use
 and other CWE Hardware-Specific Security Vulnerabilities.
-
-Your entire output MUST be a single, valid JSON object, start with '{{' end with '}}' Output plain text only, do not add md formatting modifiers. The structure must be as follows:
-{{
-  "identified_vulnerabilities": [
-    {{
-      "description": "A clear, concise explanation of the weakness. For example, 'The main state machine does not have a default case, which could lead to a lockup state if an undefined state is reached.'",
-      "location": "source file name and line number, e.g., 'hmac_top_reg.sv:123-456'",
-      "code_snippet": "
-The specific and relevant lines of Verilog/SystemVerilog code where the vulnerability exists.
-      ",
-      "impact": "The security consequence of the vulnerability.",
-      "trigger_condition": "How an attacker or specific event could trigger this vulnerability.",
-      "recommendations": "Actionable advice for the hardware designer to fix the issue."
-    }},
-  ]
-}}
 
 User input:
 Pre processed information about the target IP module:
@@ -45,6 +32,24 @@ Pre processed information about the target IP module:
 File name: {file_name}
 RTL code:
 {read_sv_file(file_paths[file_name])}
+
+Output plain text only,do not add md formatting modifiers. 
+Your entire output MUST be a single, valid JSON array. Start with '[', end with ']', DO NOT ADD "```json" or"```". 
+Your output format:
+[
+    {{
+      "description": "A clear, concise explanation of the weakness. For example, 'The main state machine does not have a default case, which could lead to a lockup state if an undefined state is reached.'",
+      "location": "source file name and line number, e.g., 'hmac_top_reg.sv:123-456'",
+      "code_snippet": "
+    The specific and relevant lines of Verilog/SystemVerilog code where the vulnerability exists.
+    Note: Escape characters (e.g., \, {{, }}) must be handled correctly.
+      ",
+      "impact": "The security consequence of the vulnerability.",
+      "trigger_condition": "How an attacker or specific event could trigger this vulnerability.",
+      "recommendations": "Actionable advice for the hardware designer to fix the issue."
+    }},
+    ...
+]
 """
 
      
@@ -64,7 +69,11 @@ def llm_invoke(model_name, module_name, file_name, prompt):
     if not os.path.exists(f"../results/{model_name}/{module_name}"):
         os.makedirs(f"../results/{model_name}/{module_name}")
     with open(f"../results/{model_name}/{module_name}/{file_name}.json", "w") as f:
-        f.write(result.text())
+        try:
+            json.dump(JsonOutputParser().parse(result.content), f, indent=2)
+        except Exception as e:
+            print(f"Error parsing JSON: {e}")
+            print(f"Raw response: {result.content}")
      
 def analyze_module(model_name, module_name, file_name=None):
     with open(f"../data/module_info/{module_name}.json", "r") as f:
@@ -92,5 +101,5 @@ def analyze_module(model_name, module_name, file_name=None):
 # analyze_module("gemini-2.5-pro", "lowrisc_ibex", "ibex_cs_registers.sv")
 # analyze_module("gemini-2.5-pro", "lowrisc_ibex", "ibex_pmp.sv")
 # analyze_module("gemini-2.5-pro", "lowrisc_ibex", "ibex_id_stage.sv")
-analyze_module("gemini-2.5-pro", "aes", "aes_cipher_core.sv")
+analyze_module("gemini-2.5-pro", "hmac", "hmac_reg_top.sv")
 # %%

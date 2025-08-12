@@ -106,7 +106,7 @@ def get_svfiles_path(module_name: str) -> dict[str, str]:
     if not sv_files:
         raise ValueError(f"No .sv files found in the module {module_name} at {rtl_path}.")
     return sv_files
-# get_svfiles_path("top_earlgrey_pinmux")
+get_svfiles_path("top_earlgrey_pinmux")
 
 # %%
 # @tools.tool("get_module_list")

@@ -1,0 +1,42 @@
+[
+  {
+    "description": "Critical Information Disclosure via Key Register Readback. The secret key registers, specified as write-only (WO) in the documentation, can be partially read through incorrect read multiplexer logic. A read operation to the `WIPE_SECRET` register address (0x20) incorrectly returns the first 32-bit word of the secret key (`key[0]`). Similarly, a read to the `KEY_0` register address (0x24) returns the second 32-bit word of the key (`key[1]`). This directly exposes the most sensitive asset of the module.",
+    "location": "hmac_reg_top.sv:2412-2418",
+    "code_snippet": "\n      addr_hit[8]: begin // Corresponds to HMAC_WIPE_SECRET_OFFSET\n        reg_rdata_next[31:0] = reg2hw.key[0].q;\n      end\n\n      addr_hit[9]: begin // Corresponds to HMAC_KEY_0_OFFSET\n        reg_rdata_next[31:0] = reg2hw.key[1].q;\n      end\n",
+    "impact": "Complete compromise of the HMAC function's security. An attacker with standard read access to the device's registers can trivially extract the first 64 bits of the secret key. This allows the attacker to forge message authentication codes (MACs) for any message, defeating the primary purpose of the IP.",
+    "trigger_condition": "A standard, non-privileged read operation from the TL-UL bus to address `HMAC_WIPE_SECRET_OFFSET` (0x20) or `HMAC_KEY_0_OFFSET` (0x24).",
+    "recommendations": "The read multiplexer logic must be corrected immediately. Reads to write-only registers, especially `KEY_0`-`KEY_31` and `WIPE_SECRET`, must not return any part of the key. These cases should be modified to return a constant, non-sensitive value such as 32'h0, or the bus adapter should be configured to return an error for such reads."
+  },
+  {
+    "description": "Critical Information Disclosure via Default Read Case. The default case in the `unique case` statement for the read data multiplexer is hardcoded to return the third 32-bit word of the secret key (`reg2hw.key[2].q`). If a read transaction targets an unmapped address within the register file's range, it will fall through to this default case, leaking another portion of the secret key.",
+    "location": "hmac_reg_top.sv:2616-2618",
+    "code_snippet": "\n      default: begin\n        reg_rdata_next = reg2hw.key[2].q;\n      end\n",
+    "impact": "Compromise of the HMAC function's security. An attacker with read access can probe unmapped or reserved addresses within the HMAC register space to extract the third word of the secret key. This compounds the severity of the first vulnerability, allowing an attacker to recover 96 bits of the key with simple read operations.",
+    "trigger_condition": "A read operation to any address within the register file's address space that does not correspond to a valid, implemented register offset.",
+    "recommendations": "The default case of any security-critical read multiplexer must never return sensitive data. It should be changed to return a fixed, non-sensitive value like `32'h0` or `32'hDEADBEEF`. This ensures that reads to unmapped addresses do not result in information leakage."
+  },
+  {
+    "description": "Unprotected Read of Intermediate Digest State. The digest registers (`DIGEST_0` to `DIGEST_15`) can be read at any time, including during an active HMAC operation. The register file's `reg_busy` signal is hardcoded to zero, meaning it never blocks bus access. This allows an attacker to read the intermediate digest produced after the first hash round (the hash of the inner key and the message). This is a known cryptographic weakness in HMAC that can aid in key-recovery attacks.",
+    "location": "hmac_reg_top.sv:2623-2627",
+    "code_snippet": "\n    // The register file never signals that it is busy, allowing access at any time.\n    logic shadow_busy;\n    assign shadow_busy = 1'b0;\n\n    // register busy\n    assign reg_busy = shadow_busy;\n",
+    "impact": "Leakage of intermediate cryptographic state. This violates the security assumptions of the HMAC algorithm (RFC 2104) and can significantly reduce the complexity of a brute-force or analytical attack to discover the secret key, especially if the attacker can control parts of the message.",
+    "trigger_condition": "The attacker initiates an HMAC operation and then performs a read from a digest register while the operation is in progress, specifically between the inner and outer hash computations.",
+    "recommendations": "The register file must prevent reads and writes to the digest registers while the HMAC core is busy. The `reg_busy` signal should be driven by the core's status (e.g., connected to a signal indicating the `hmac_core_fsm` is not in the IDLE state). This will cause the `tlul_adapter_reg` to correctly stall bus transactions until the HMAC operation is complete."
+  },
+  {
+    "description": "Flawed Key Wiping Mechanism Leads to Denial of Service. The `WIPE_SECRET` register, which is intended to securely clear the key material, can only be triggered when a bus error (`reg_error`) has occurred. The write enable signal `wipe_secret_we` is incorrectly gated with `reg_error`. This prevents legitimate, error-free software from wiping the key and creates a side channel where an attacker can induce a key wipe (Denial of Service) by forcing a bus error while writing to the `WIPE_SECRET` address.",
+    "location": "hmac_reg_top.sv:2122",
+    "code_snippet": "\n    assign wipe_secret_we = addr_hit[8] & reg_we & reg_error;\n",
+    "impact": "Denial of Service and failure of a critical security feature. The intended key sanitization mechanism is non-functional under normal conditions. An attacker can exploit the flawed logic to trigger an unintended key wipe by manipulating bus transactions to cause an error, disabling any system component that relies on this HMAC instance.",
+    "trigger_condition": "An attacker crafts a bus write to the `WIPE_SECRET` address (0x20) while simultaneously causing a bus protocol error (e.g., an access to an unmapped address, a sub-word write to a register that doesn't permit it, or a transaction with a bad integrity checksum).",
+    "recommendations": "The logic for `wipe_secret_we` must be corrected to remove the dependency on `reg_error`. The write enable should be gated with `!reg_error` to be consistent with other registers, i.e., `assign wipe_secret_we = addr_hit[8] & reg_we & !reg_error;`. This ensures the command only executes on a valid, error-free transaction."
+  },
+  {
+    "description": "Incorrect Signal Logic for Write-Only Key Registers. The read-back values for most of the secret key registers (`KEY_1` through `KEY_31`) are hardcoded to return `32'h0`. While this prevents key leakage for these specific registers, it is functionally incorrect for registers that are documented as write-only. A read to a WO register should ideally generate a bus error or be architecturally defined to return a specific value, but the implementation is inconsistent and appears to be the result of a code generation error.",
+    "location": "hmac_reg_top.sv:2420-2542",
+    "code_snippet": "\n      addr_hit[10]: begin // Corresponds to HMAC_KEY_1_OFFSET\n        reg_rdata_next[31:0] = '0';\n      end\n\n      addr_hit[11]: begin // Corresponds to HMAC_KEY_2_OFFSET\n        reg_rdata_next[31:0] = '0';\n      end\n      // ... and so on for all subsequent key registers.\n",
+    "impact": "Low. This is primarily a functional bug that violates the principle of least astonishment. While it doesn't directly leak key material like the other findings, it indicates systemic issues in the register file implementation. An attacker cannot directly exploit this, but it contributes to the overall low quality and unpredictability of the security mechanisms.",
+    "trigger_condition": "A read operation from the bus to any key register address from `HMAC_KEY_1_OFFSET` to `HMAC_KEY_31_OFFSET`.",
+    "recommendations": "The register file logic should be made consistent. All write-only registers, including the entire key space, should have their read-back paths handled uniformly. The recommended approach is to have reads to these addresses return a constant value like `32'h0` and ensure this is applied to all key registers, not just a subset. This should be fixed along with the critical key leakage vulnerabilities."
+  }
+]

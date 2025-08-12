@@ -1,0 +1,91 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The data blanking mechanism for the IMEM and DMEM bus interfaces is incorrectly implemented. The enable signals for the `prim_blanker` modules (`imem_rdata_bus_en_q` and `dmem_rdata_bus_en_q`) are hardcoded to a constant value of '1'. A '1' on the blanker's enable input causes it to pass data through, effectively disabling the blanking feature. This contradicts the design's intent, as described in the comments, to prevent data leakage while the core is executing.",
+      "location": "otbn.sv:441-455, otbn.sv:680-694",
+      "code_snippet": "
+// For IMEM:
+assign imem_rdata_bus_en_d = 1'b1;
+
+always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+        imem_rdata_bus_en_q <= 1'b1;
+    end else begin
+        imem_rdata_bus_en_q <= imem_rdata_bus_en_d;
+    end
+end
+
+prim_blanker #(.Width(39)) u_imem_rdata_bus_blanker (
+    .in_i (imem_rdata),
+    .en_i (imem_rdata_bus_en_q),
+    .out_o(imem_rdata_bus_raw)
+);
+
+// Similar logic exists for DMEM:
+assign dmem_rdata_bus_en_d = 1'b1;
+// ...
+prim_blanker #(.Width(ExtWLEN)) u_dmem_rdata_bus_blanker (
+    .in_i (dmem_rdata),
+    .en_i (dmem_rdata_bus_en_q),
+    .out_o(dmem_rdata_bus_raw)
+);
+      ",
+      "impact": "This flaw creates a significant side-channel vulnerability (CWE-208). It allows an attacker with bus access to read the instruction stream from IMEM and data from DMEM while the OTBN core is performing sensitive cryptographic operations. This leakage breaks the execution isolation security boundary, potentially exposing secret keys, intermediate values, or details about the algorithm's execution flow.",
+      "trigger_condition": "An attacker performs a read operation on the TL-UL bus to an address within the IMEM or DMEM range while the OTBN core is in an execution state (e.g., `StatusBusyExecute`). The supposedly blanked read data will instead contain the sensitive information being accessed by the core.",
+      "recommendations": "The blanker enable signals must be controlled dynamically. They should be de-asserted (driven to '0') whenever the core is accessing the memory or is in a locked state. The logic should be changed from `assign imem_rdata_bus_en_d = 1'b1;` to something like `assign imem_rdata_bus_en_d = ~imem_access_core & ~locking;`. The same correction is needed for `dmem_rdata_bus_en_d` using `dmem_access_core`."
+    },
+    {
+      "description": "The DMEM integrity check for data read by the OTBN core is non-functional. A `prim_secded_inv_39_32_dec` module is instantiated to detect SECDED errors, but its error output (`dmem_rerror_raw`) is never used. The final error signal passed to the core (`dmem_rerror_core`) is sourced from a signal (`dmem_rerror`) that is hardcoded to `2'b00`, indicating no error is ever detected.",
+      "location": "otbn.sv:600-616, otbn.sv:725",
+      "code_snippet": "
+// SECDED decoder is instantiated and calculates an error
+prim_secded_inv_39_32_dec u_dmem_intg_check (
+  .data_i    (dmem_rdata[i_word*39+:39]),
+  .data_o    (),
+  .syndrome_o(),
+  .err_o     (dmem_rerror_raw)
+);
+
+// The calculated error (dmem_rerror_raw) is ignored. The following assignment does not use it.
+assign dmem_rerror_vec[i_word*2 +: 2] = {2{dmem_rmask_core_q[i_word] & dmem_rvalid & dmem_access_core}};
+
+// ...
+
+// The final error signal is hardcoded to 'no error'.
+assign dmem_rerror = 2'b00;
+
+// ...
+
+// The hardcoded 'no error' signal is passed to the core.
+assign dmem_rerror_core = dmem_rerror;
+      ",
+      "impact": "This vulnerability completely bypasses the DMEM integrity protection, a critical security feature against fault injection attacks. An attacker can use physical means (e.g., voltage glitching, laser fault injection) to corrupt data in DMEM without detection. This could lead to silent data corruption, resulting in incorrect cryptographic outputs, leakage of secret keys, or bypassing security-critical checks within the OTBN program.",
+      "trigger_condition": "A physical fault injection attack successfully modifies a DMEM location. The OTBN core then reads this corrupted data during an operation. The hardware will fail to detect the integrity violation and will proceed with the corrupted data.",
+      "recommendations": "The logic must be corrected to propagate the detected error. First, the `dmem_rerror_vec` assignment should incorporate the `dmem_rerror_raw` signal, e.g., `assign dmem_rerror_vec[i_word*2 +: 2] = dmem_rerror_raw & {2{dmem_rmask_core_q[i_word] & dmem_rvalid & dmem_access_core}};`. Second, the `dmem_rerror` signal must be derived from this vector instead of being hardcoded, e.g., `assign dmem_rerror = |dmem_rerror_vec;`."
+    },
+    {
+      "description": "The logic for clearing the `ERR_BITS` register is flawed. The entire register is cleared to zero if a write occurs to the `bad_data_addr` field, rather than adhering to the Write-1-to-Clear (W1C) behavior where only bits written with '1' are cleared. The clear signal for all error bits is incorrectly tied only to the write-enable pulse (`qe`) of a single field.",
+      "location": "otbn.sv:925-927",
+      "code_snippet": "
+assign err_bits_clear = reg2hw.err_bits.bad_data_addr.qe & is_not_running_q;
+assign err_bits_d = err_bits_clear ? '0 : err_bits;
+assign err_bits_en = err_bits_clear | done_core;
+
+// ...
+
+always_ff @(posedge clk_i or negedge rst_ni) begin
+  if (!rst_ni) begin
+    err_bits_q <= '0;
+  end else if (err_bits_en) begin
+    err_bits_q <= err_bits_d;
+  end
+end
+      ",
+      "impact": "This vulnerability allows an attacker to hide or tamper with evidence of a fault or malicious operation. If an operation results in multiple error bits being set (e.g., `illegal_insn` and `fatal_software`), a subsequent write by attacker-controlled software to just the `bad_data_addr` bit will clear all error flags. This prevents legitimate host software from correctly diagnosing the failure, potentially allowing an attack to go unnoticed or be misattributed.",
+      "trigger_condition": "An OTBN operation completes, setting multiple bits in the `ERR_BITS` register. The host CPU then performs a write to the `ERR_BITS` register offset, specifically targeting the `bad_data_addr` bit, before legitimate monitoring software can read the register.",
+      "recommendations": "The register clearing logic should be implemented to meet the W1C standard for all fields. Instead of a single `err_bits_clear` signal, the next state for each bit in `err_bits_q` should be calculated based on a write to that specific bit. A correct implementation would look something like `err_bits_d = err_bits_q & ~reg2hw.err_bits.q;`, where the update is enabled by `reg2hw.err_bits.qe` (representing a write to the register as a whole) and `is_not_running_q`."
+    }
+  ]
+}
+```

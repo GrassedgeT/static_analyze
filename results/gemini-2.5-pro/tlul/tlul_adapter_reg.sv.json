@@ -1,0 +1,52 @@
+```json
+{
+  "identified_vulnerabilities": [
+    {
+      "description": "The module's security-critical parameters for enabling bus integrity checks are disabled by default. Specifically, `CmdIntgCheck`, `EnableRspIntgGen`, and `EnableDataIntgGen` are all set to '0'. This follows an insecure-by-default pattern, where an integrator must remember to explicitly enable these protections. Forgetting to do so would leave the register interface vulnerable to data corruption attacks on the bus.",
+      "location": "tlul_adapter_reg.sv:23-25",
+      "code_snippet": "
+parameter  bit CmdIntgCheck      = 0,  // 1: Enable command integrity check
+parameter  bit EnableRspIntgGen  = 0,  // 1: Generate response integrity
+parameter  bit EnableDataIntgGen = 0,  // 1: Generate response data integrity
+",
+      "impact": "If instantiated with default parameters, the adapter provides no protection against in-transit corruption of commands or data on the TL-UL bus. An attacker with the ability to perform fault injection attacks (e.g., voltage/clock glitching, EM pulses) could modify a transaction to read a sensitive register, write to a critical control register, or otherwise cause a security failure, leading to information disclosure or privilege escalation.",
+      "trigger_condition": "An integrator instantiates the `tlul_adapter_reg` module in a top-level design without overriding the default parameter values to enable integrity checking. An attacker then uses a physical fault injection attack to flip bits on the TL-UL bus during a transaction to the associated registers.",
+      "recommendations": "Follow a secure-by-default design principle. Change the default values of `CmdIntgCheck`, `EnableRspIntgGen`, and `EnableDataIntgGen` to '1'. This forces designers to make a conscious decision to disable the security feature, rather than having to remember to enable it. The performance and area impact of enabling these features should be clearly documented."
+    },
+    {
+      "description": "The adapter silently truncates the address of incoming read requests to be word-aligned but only flags an alignment error for write requests. The logic at line 91 unconditionally clears the lower two bits of the address (`addr_o`), while the error generation logic starting at line 217 only checks for misaligned addresses when a write request (`wr_req`) is active. A misaligned read request will therefore not generate an error and will instead return data from the word-aligned base address, which is different from the requested address.",
+      "location": "tlul_adapter_reg.sv:91, 217-225",
+      "code_snippet": "
+// Address is always forced to be word-aligned
+assign addr_o  = {tl_i.a_address[RegAw-1:2], 2'b00}; // generate always word-align
+
+// ...
+
+// Alignment error is only checked for writes
+always_comb begin
+  if (wr_req) begin
+    // Only word-align is accepted based on comportability spec
+    addr_align_err = |tl_i.a_address[1:0];
+  end else begin
+    // No request
+    addr_align_err = 1'b0;
+  end
+end
+",
+      "impact": "This flaw can lead to silent data leakage or incorrect operation. A host (malicious or faulty) that issues a misaligned read will receive data from an unintended register location without any error indication. The host will operate on this incorrect data, potentially leading to system instability or compromise. For example, a read from address `0x4` might be intended, but a faulty read to `0x6` would silently return data from `0x4` instead of flagging an error.",
+      "trigger_condition": "A host connected to the TL-UL bus sends a read request (`a_opcode == Get`) with a non-word-aligned address (i.e., an address where the lower two bits are not '00').",
+      "recommendations": "The address alignment check should be applied to both read and write requests. Modify the `addr_align_err` logic to trigger on any misaligned access. For example: `assign addr_align_err = (wr_req || rd_req) & (|tl_i.a_address[1:0]);`. This ensures that any protocol-violating misaligned access is caught and reported as an error, preventing silent failures."
+    },
+    {
+      "description": "The adapter's `a_ready` signal, which indicates its readiness to accept a new transaction, is directly gated by the `busy_i` input from the downstream peripheral. If the downstream logic enters a state where `busy_i` is permanently asserted, the adapter will be unable to accept any new transactions, as `a_ready` will be held low indefinitely whenever `a_valid` is high.",
+      "location": "tlul_adapter_reg.sv:157",
+      "code_snippet": "
+a_ready:  ~(outstanding_q | tl_i.a_valid & busy_i),
+",
+      "impact": "This creates a potential for a complete Denial of Service (DoS) on the register interface. If an attacker can find a vulnerability in the downstream peripheral that causes it to lock up and hold `busy_i` high, all communication to that peripheral will be blocked. This could halt critical system functions that rely on accessing these registers.",
+      "trigger_condition": "An attacker exploits a bug or a specific state in the downstream peripheral connected to this adapter, causing its `busy_i` output signal to become permanently stuck in the high state. Any subsequent access attempt from a host will then stall the bus.",
+      "recommendations": "To improve resilience against downstream faults, consider adding a timeout mechanism to the adapter. If `tl_i.a_valid` and `busy_i` are both asserted for a programmable or fixed number of cycles, the adapter should timeout, cancel the request, and return an error response on the `d` channel. This would prevent a bus lockup and allow the system to detect and potentially recover from the fault."
+    }
+  ]
+}
+```
