@@ -1,12 +1,9 @@
 import os
 import json
-import time
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import asyncio
+from playwright.async_api import async_playwright, Page
 from pprint import pprint
-
+import asyncio
 # --- 配置常量 ---
 
 # Google 表单的查看 URL
@@ -19,7 +16,7 @@ EMAIL_ADDRESS = "grassedge@qq.com"
 # 报告文件所在的根目录
 REPORTS_DIR = 'reports'
 
-# Google 表单字段的 XPath (根据用户提示修正)
+# Google 表单字段的 XPath (无需改变)
 FORM_FIELD_XPATHS = {
     "Email": "/html/body/div[1]/div[2]/form/div[2]/div/div[2]/div[1]/div/div[1]/div[2]/div[1]/div/div[1]/input",
     "Team name": "/html/body/div[1]/div[2]/form/div[2]/div/div[2]/div[2]/div/div/div[2]/div/div[1]/div/div[1]/input",
@@ -37,7 +34,7 @@ FORM_FIELD_XPATHS = {
     "Send me a copy": "//*[@id=\"i65\"]"
 }
 
-# --- 报告解析与用户交互 ---
+# --- 报告解析与用户交互 (这部分函数保持同步，无需修改) ---
 
 def load_reports(directory: str) -> list:
     """递归扫描指定目录，加载所有 .json 格式的报告文件。"""
@@ -62,7 +59,17 @@ def load_reports(directory: str) -> list:
     print(f"[*] 成功加载 {len(all_reports)} 份报告。")
     return all_reports
 
-def prompt_user_for_selection(reports: list) -> dict | None:
+async def get_user_input(prompt: str) -> str:
+    """在不阻塞事件循环的情况下异步获取用户输入。"""
+    loop = asyncio.get_running_loop()
+    # run_in_executor 将阻塞函数 (input) 放到一个单独的线程中执行
+    return await loop.run_in_executor(
+        None,  # 使用默认的线程池
+        input, # 要执行的阻塞函数
+        prompt # 传递给 input 函数的参数
+    )
+
+async def prompt_user_for_selection(reports: list) -> dict | None:
     """向用户显示报告列表，并让他们选择一个。"""
     print("\n--- 请选择要填充的报告 ---")
     for i, report in enumerate(reports):
@@ -70,30 +77,28 @@ def prompt_user_for_selection(reports: list) -> dict | None:
         print(f"  [{i+1}] {finding[:70]}...")
     while True:
         try:
-            choice = input(f"请输入报告编号 (1-{len(reports)})，或输入 'q' 退出: ")
+            choice = await get_user_input(f"请输入报告编号 (1-{len(reports)})，或输入 'q' 退出: ")
             if choice.lower() == 'q': return None
             choice_index = int(choice) - 1
             if 0 <= choice_index < len(reports): return reports[choice_index]
             else: print(f"[!] 无效的选择。")
         except ValueError: print("[!] 无效的输入。")
 
-def get_user_inputs() -> tuple[str | None, str | None]:
+async def get_user_inputs() -> tuple[str | None, str | None]:
     """提示用户输入 Bug 编号和附件链接。"""
     print("\n--- 请输入所需信息 ---")
-    bug_number = input("请输入 Bug 编号 (例如, 'BUG-001')，或输入 'q' 退出: ")
+    bug_number = await get_user_input("请输入 Bug 编号 (例如, 'BUG-001')，或输入 'q' 退出: ")
     if bug_number.lower() == 'q': return None, None
-    attachment_link = input("请输入附件链接 (可选, 可留空)，或输入 'q' 退出: ")
+    attachment_link = await get_user_input("请输入附件链接 (可选, 可留空)，或输入 'q' 退出: ")
     if attachment_link.lower() == 'q': return None, None
     return bug_number, attachment_link
 
-# --- Selenium 核心功能 ---
+# --- Playwright 核心功能 ---
 
-def fill_form_with_selenium(web,report_data: dict, bug_number: str, attachment_link: str):
-    """并根据 XPath 填充表单。"""
-    print("\n[*] 正在启动浏览器并导航到 Google 表单...")
+async def fill_form_with_playwright(page: Page, report_data: dict, bug_number: str, attachment_link: str):
+    """使用 Playwright 和 XPath 填充表单。"""
+    print("\n[*] 正在使用 Playwright 填充表单...")
     
-    web.get(GOOGLE_FORM_URL)
-
     try:
         data_to_fill = {
             "Email": EMAIL_ADDRESS,
@@ -112,47 +117,80 @@ def fill_form_with_selenium(web,report_data: dict, bug_number: str, attachment_l
         }
 
         for label, xpath in FORM_FIELD_XPATHS.items():
+            locator = page.locator(f"xpath={xpath}")
+            
             if label in data_to_fill:
                 value = data_to_fill[label]
                 if value:
                     print(f"  - 正在填充: {label}")
-                    element = WebDriverWait(web, 10).until(EC.presence_of_element_located((By.XPATH, xpath)))
-                    element.send_keys(value)
+                    await locator.fill(value)
             elif label == "Send me a copy":
                 print(f"  - 正在勾选: {label}")
-                element = WebDriverWait(web, 10).until(EC.presence_of_element_located((By.XPATH, xpath)))
-                web.execute_script("arguments[0].click();", element)
+                await locator.click()
 
         print("\n[+] 所有字段已填充完毕！")
-        print("[*] 浏览器将保持打开状态，请您手动检查并提交表单。")
+        print("[*] 当前标签页将保持打开状态，请您手动检查并提交表单。")
+        print("[*] 提交当前表单后可继续选择下一个报告进行填充。")
+        while page.url == GOOGLE_FORM_URL:
+            await asyncio.sleep(1)
     except Exception as e:
         print(f"\n[!] 填充表单时发生错误: {e}")
-    finally:
-        if 'web' in locals() and 'e' in locals():
-             web.quit()
+        print("[*] 该标签页可能会关闭，请在下一个循环中重试。")
+        await page.close()
 
 # --- 主程序 ---
 
-def main():
-    """程序主入口"""
-    web = webdriver.Chrome()
+async def main():
+    """程序主入口 (基于 Playwright)"""
     reports = load_reports(REPORTS_DIR)
     if not reports:
         print("[!] 未找到任何报告，程序退出。")
         return
 
-    while True:
-        web.get(GOOGLE_FORM_URL)
-        selected_report = prompt_user_for_selection(reports)
-        if not selected_report:
-            print("[*] 用户取消操作，程序退出。")
-            return
-        bug_number, attachment_link = get_user_inputs()
-        if bug_number is None:
-            print("[*] 用户取消操作，程序退出。")
-            return
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        print("[*] 浏览器已启动。")
+        
+        while True:
+            page = await context.new_page()
+            print("\n[*] 页面加载与信息输入将同步进行...")
 
-        fill_form_with_selenium(web,selected_report, bug_number, attachment_link)
+            # 定义一个协程来处理所有用户交互
+            async def get_all_user_data():
+                selected_report = await prompt_user_for_selection(reports)
+                if not selected_report:
+                    return None, None, None  # 用户取消
+
+                bug_number, attachment_link = await get_user_inputs()
+                if bug_number is None:
+                    return None, None, None  # 用户取消
+                
+                return selected_report, bug_number, attachment_link
+
+            # 并发运行页面加载和用户输入流程
+            # page.goto 的返回值是 response，我们这里忽略它
+            _, user_data = await asyncio.gather(
+                page.goto(GOOGLE_FORM_URL),
+                get_all_user_data()
+            )
+            
+            selected_report, bug_number, attachment_link = user_data
+
+            # 如果用户在任何一步取消，则退出循环
+            if selected_report is None:
+                print("[*] 用户取消操作，正在关闭标签页...")
+                await page.close()
+                break
+
+            # 此时，页面已加载，数据也已输入完毕
+            await fill_form_with_playwright(page, selected_report, bug_number, attachment_link)
+        
+        print("\n[*] 程序结束，正在关闭浏览器...")
+        await browser.close()
 
 if __name__ == '__main__':
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[*] 检测到用户中断，程序退出。")

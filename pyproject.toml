@@ -18,7 +18,7 @@ dependencies = [
     "langchain-text-splitters>=0.3.8",
     "matplotlib>=3.10.3",
     "networkx>=3.5",
-    "selenium>=4.35.0",
+    "playwright>=1.54.0",
     "unstructured[md]>=0.18.3",
 ]
 
