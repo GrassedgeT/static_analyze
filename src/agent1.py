@@ -243,10 +243,11 @@ hw_security_prompt = ChatPromptTemplate.from_messages(
 )
 
 model = ChatOpenAI(
-    model="gemini-2.5-pro",
+    model="deepseek",
     api_key=os.getenv("OPEN_API_KEY", ""),
     base_url="https://chatbox.isrc.ac.cn/api", 
 )
+
 # model = ChatDeepSeek(
 #     model="deepseek-reasoner",
 #     temperature=0.3,

@@ -16,7 +16,7 @@ EMAIL_ADDRESS = "grassedge@qq.com"
 # 报告文件所在的根目录
 REPORTS_DIR = 'reports'
 
-# Google 表单字段的 XPath (无需改变)
+# Google 表单字段的 XPath
 FORM_FIELD_XPATHS = {
     "Email": "/html/body/div[1]/div[2]/form/div[2]/div/div[2]/div[1]/div/div[1]/div[2]/div[1]/div/div[1]/input",
     "Team name": "/html/body/div[1]/div[2]/form/div[2]/div/div[2]/div[2]/div/div/div[2]/div/div[1]/div/div[1]/input",
@@ -34,7 +34,7 @@ FORM_FIELD_XPATHS = {
     "Send me a copy": "//*[@id=\"i65\"]"
 }
 
-# --- 报告解析与用户交互 (这部分函数保持同步，无需修改) ---
+# --- 报告解析与用户交互---
 
 def load_reports(directory: str) -> list:
     """递归扫描指定目录，加载所有 .json 格式的报告文件。"""
@@ -73,7 +73,7 @@ async def prompt_user_for_selection(reports: list) -> dict | None:
     """向用户显示报告列表，并让他们选择一个。"""
     print("\n--- 请选择要填充的报告 ---")
     for i, report in enumerate(reports):
-        finding = report.get("Finding", "无标题")
+        finding = report.get("Location or code reference", "无标题")
         print(f"  [{i+1}] {finding[:70]}...")
     while True:
         try:
@@ -137,8 +137,6 @@ async def fill_form_with_playwright(page: Page, report_data: dict, bug_number: s
         print(f"\n[!] 填充表单时发生错误: {e}")
         print("[*] 该标签页可能会关闭，请在下一个循环中重试。")
         await page.close()
-
-# --- 主程序 ---
 
 async def main():
     """程序主入口 (基于 Playwright)"""

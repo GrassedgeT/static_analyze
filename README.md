@@ -2,6 +2,7 @@
 # Overview
 
 This tool leverages advanced llms to construct agents, integrating powerful AST parsing and  RAG capabilities. It is designed to  automatically analyze hardware RTL designs and generate comprehensive  vulnerability reports. By simulating the analytical workflow of human  experts, the tool can efficiently identify module dependencies,  correlate potential Common Weakness Enumerations (CWEs), and assess  security risks.
+# Usage
 
 # Basic Workflow
 ![workflow](data/images/static_analyze.png)
